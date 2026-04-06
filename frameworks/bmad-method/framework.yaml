@@ -1,0 +1,79 @@
+# BMAD Method Framework
+# Business-driven Multi-Agent Development
+#
+# This framework applies BMAD roles and practices on top of the base agent team.
+# Each agent gets a BMAD persona that orients it toward business value and
+# structured delivery — stories, acceptance criteria, definition of done.
+
+id: bmad-method
+label: BMAD Method
+description: >
+  Business-driven Multi-Agent Development. Orients the agent team toward
+  user stories, acceptance criteria, iterative delivery, and explicit
+  definition of done at every layer.
+
+# Global skills added to ALL agents when this framework is active
+global_skills:
+  - run-checklist
+
+# Per-agent configuration overrides
+agents:
+  spec:
+    persona: analyst
+    skills:
+      - deep-research
+      - create-story
+      - create-doc
+
+  architect:
+    persona: architect
+    skills:
+      - create-doc
+      - shard-doc
+      - bmad-story
+
+  planner:
+    persona: scrum-master
+    skills:
+      - create-story
+      - run-checklist
+      - bmad-story
+
+  backend_dev:
+    persona: developer
+    skills:
+      - coding-standards
+      - run-checklist
+      - bmad-story
+
+  test_dev:
+    persona: developer
+    skills:
+      - coding-standards
+      - run-checklist
+
+  config_agent:
+    persona: developer
+    skills:
+      - run-checklist
+
+  docs_agent:
+    persona: analyst
+    skills:
+      - create-doc
+      - shard-doc
+
+  integration_test:
+    persona: qa
+    skills:
+      - run-checklist
+
+  reviewer:
+    persona: qa
+    skills:
+      - run-checklist
+
+  cicd:
+    persona: developer
+    skills:
+      - run-checklist

@@ -1,0 +1,14 @@
+framework_skills:
+  openspec:
+  - openspec-propose
+  - create-story
+id: planner
+label: Planner
+personas:
+  bmad-method: scrum-master
+  openspec: openspec-planner
+prompt: prompts/planner.md
+skills:
+- create-story
+- run-checklist
+- agent-collaboration

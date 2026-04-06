@@ -1,0 +1,11 @@
+framework_skills:
+  openspec:
+  - openspec-review
+id: reviewer
+label: Reviewer
+personas:
+  bmad-method: qa
+  openspec: openspec-reviewer
+prompt: prompts/reviewer.md
+skills:
+- run-checklist

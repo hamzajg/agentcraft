@@ -1,0 +1,14 @@
+framework_skills:
+  openspec:
+  - openspec-apply
+  - coding-standards
+id: test_dev
+label: Test Developer
+personas:
+  bmad-method: developer
+  openspec: openspec-developer
+prompt: prompts/test_dev.md
+skills:
+- run-checklist
+- coding-standards
+- agent-collaboration

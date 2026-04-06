@@ -1,0 +1,6 @@
+{
+  "id": "reviewer",
+  "studioTeam": "Reviewer Team",
+  "description": "Code reviewer — security, performance, and quality feedback",
+  "tags": ["code", "review", "security"]
+}

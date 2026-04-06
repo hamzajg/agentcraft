@@ -1,0 +1,81 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environment - explicit for this project
+bin/
+lib/
+lib64/
+pyvenv.cfg
+pip-selfcheck/
+share/python-wheels/
+
+# Environment variables
+.env
+.venvrc
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Aider / VSCode tools
+.aider.*
+workspace.yaml
+model-profile.yaml
+
+# Database
+comms/comms.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+monitor/
+.rag/
+.ai/
+
+# Build / Dist
+dist/
+build/
+*.egg-info/
+*.eggs/
+
+# Testing
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+.cache
+nosetests.xml
+coverage.xml
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Misc
+*.bak
+*.swp
+*~
+
+# frontend
+comms/frontend/node_modules/
+comms/frontend/dist/

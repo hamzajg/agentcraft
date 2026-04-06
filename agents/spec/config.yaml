@@ -1,0 +1,17 @@
+framework_skills:
+  bmad-method:
+  - bmad-story
+  openspec:
+  - openspec-propose
+  - deep-research
+  - create-doc
+id: spec
+label: Spec
+personas:
+  bmad-method: analyst
+  openspec: openspec-analyst
+prompt: prompts/spec.md
+skills:
+- deep-research
+- create-doc
+- agent-collaboration

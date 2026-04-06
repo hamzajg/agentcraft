@@ -1,0 +1,16 @@
+role: supervisor
+label: Supervisor
+description: Central orchestrator for workflow and agent coordination
+
+skills:
+  - orchestration-decision
+  - agent-collaboration
+  - quality-review
+  - phase-transition
+
+capabilities:
+  - workflow orchestration
+  - agent supervision
+  - collaboration coordination
+  - quality evaluation
+  - phase management

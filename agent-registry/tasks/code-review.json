@@ -1,0 +1,16 @@
+{
+  "taskType": "code-review",
+  "aggregationStrategy": "LLM_SUMMARY",
+  "steps": [
+    {
+      "agentId": "java-dev",
+      "promptTemplate": "Review the following code for correctness and best practices. Code:\n{input}",
+      "mode": "SEQUENTIAL"
+    },
+    {
+      "agentId": "reviewer",
+      "promptTemplate": "A Java expert has reviewed this code:\n{context}\n\nNow provide security and performance feedback on the original code:\n{input}",
+      "mode": "SEQUENTIAL"
+    }
+  ]
+}

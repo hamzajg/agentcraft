@@ -1,0 +1,109 @@
+# OpenSpec Framework
+# Spec-driven development (SDD) for the autonomous agent team.
+#
+# Based on: https://openspec.dev / https://github.com/Fission-AI/OpenSpec
+#
+# Philosophy:
+#   → fluid not rigid
+#   → iterative not waterfall
+#   → specs live in the repo alongside code
+#   → human and AI align on specs before code is written
+#   → brownfield-first: works on existing codebases, not just greenfield
+#
+# Filesystem layout this framework produces:
+#
+#   openspec/
+#   ├── specs/                    ← source of truth (current system behaviour)
+#   │   └── <domain>/
+#   │       └── spec.md
+#   └── changes/                  ← one folder per proposed change
+#       └── <change-name>/
+#           ├── proposal.md       ← why: motivation, scope, impact
+#           ├── specs/            ← delta specs (what's changing in requirements)
+#           │   └── <domain>/spec.md
+#           ├── design.md         ← how: technical approach, decisions
+#           └── tasks.md          ← implementation checklist
+#
+# Workflow:
+#   propose → specs → design → tasks → implement → archive
+#
+# When archived, delta specs merge into openspec/specs/<domain>/spec.md
+# and the change folder moves to openspec/changes/archive/YYYY-MM-DD-<name>/
+
+id: openspec
+label: OpenSpec (Spec-Driven Development)
+description: >
+  Spec-driven development based on the OpenSpec methodology.
+  The agent team produces a structured change proposal before writing any code.
+  Specs live in the repo as living documentation.
+  Each change: proposal → delta specs → design → tasks → implement → archive.
+
+# Global skills added to ALL agents when this framework is active
+global_skills:
+  - run-checklist
+  - openspec-review   # all agents understand the spec structure they are working within
+
+# Per-agent configuration
+agents:
+
+  spec:
+    persona: openspec-analyst
+    skills:
+      - openspec-propose
+      - deep-research
+      - create-doc
+
+  architect:
+    persona: openspec-architect
+    skills:
+      - openspec-propose
+      - create-doc
+      - shard-doc
+
+  planner:
+    persona: openspec-planner
+    skills:
+      - openspec-propose
+      - create-story
+
+  backend_dev:
+    persona: openspec-developer
+    skills:
+      - openspec-apply
+      - coding-standards
+
+  test_dev:
+    persona: openspec-developer
+    skills:
+      - openspec-apply
+      - coding-standards
+
+  config_agent:
+    persona: openspec-developer
+    skills:
+      - openspec-apply
+      - run-checklist
+
+  docs_agent:
+    persona: openspec-analyst
+    skills:
+      - openspec-propose
+      - create-doc
+      - shard-doc
+
+  integration_test:
+    persona: openspec-developer
+    skills:
+      - openspec-apply
+      - openspec-review
+
+  reviewer:
+    persona: openspec-reviewer
+    skills:
+      - openspec-review
+
+  cicd:
+    persona: openspec-developer
+    skills:
+      - openspec-apply
+      - run-checklist

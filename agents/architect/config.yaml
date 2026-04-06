@@ -1,0 +1,15 @@
+framework_skills:
+  openspec:
+  - openspec-propose
+  - create-doc
+  - shard-doc
+id: architect
+label: Architect
+personas:
+  bmad-method: architect
+  openspec: openspec-architect
+prompt: prompts/architect.md
+skills:
+- create-doc
+- shard-doc
+- agent-collaboration

@@ -1,0 +1,12 @@
+framework_skills:
+  openspec:
+  - openspec-apply
+  - run-checklist
+id: cicd
+label: CI/CD
+personas:
+  bmad-method: developer
+  openspec: openspec-developer
+prompt: prompts/cicd.md
+skills:
+- run-checklist

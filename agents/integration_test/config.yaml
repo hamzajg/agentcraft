@@ -1,0 +1,12 @@
+framework_skills:
+  openspec:
+  - openspec-apply
+  - openspec-review
+id: integration_test
+label: Integration Test
+personas:
+  bmad-method: qa
+  openspec: openspec-developer
+prompt: prompts/integration_test.md
+skills:
+- run-checklist

@@ -1,0 +1,17 @@
+framework_skills:
+  bmad-method:
+  - bmad-story
+  openspec:
+  - openspec-apply
+  - coding-standards
+id: backend_dev
+label: Backend Developer
+personas:
+  bmad-method: developer
+  clean-arch: solid-developer
+  openspec: openspec-developer
+prompt: prompts/backend_dev.md
+skills:
+- run-checklist
+- coding-standards
+- agent-collaboration

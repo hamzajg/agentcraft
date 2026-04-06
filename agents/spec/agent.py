@@ -1,0 +1,210 @@
+"""
+spec/agent.py — Spec agent.
+
+Baby-step approach:
+  Step 1: extract entities only (fast, focused)
+  Step 2: write spec.md using entity list as scaffold (bounded output)
+  Step 3: write 3 use cases max (not all of them)
+"""
+
+import logging
+import re
+import time
+from pathlib import Path
+from core.base import AiderAgent
+
+logger = logging.getLogger(__name__)
+
+_PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "spec.md"
+SYSTEM_PROMPT = _PROMPT_FILE.read_text() if _PROMPT_FILE.exists() else "# Spec Agent"
+
+
+class SpecAgent(AiderAgent):
+    _role = "spec"
+
+    def __init__(self, model: str, workspace: Path,
+                 system_prompt: str = None, skills: list = None,
+                 framework_id: str = None, task_id: str = None,
+                 iteration_id: int = None, **kwargs):
+        super().__init__(
+            role="spec",
+            model=model,
+            workspace=workspace,
+            system_prompt=system_prompt or SYSTEM_PROMPT,
+            skills=skills or [],
+            framework_id=framework_id,
+            task_id=task_id,
+            iteration_id=iteration_id,
+            **kwargs,
+        )
+        self._is_openspec = (framework_id == "openspec")
+
+    def specify(self, docs_dir: Path) -> tuple[Path, Path]:
+        if self._is_openspec:
+            return self._specify_openspec(docs_dir)
+        return self._specify_default(docs_dir)
+
+    def _specify_default(self, docs_dir: Path) -> tuple[Path, Path]:
+        ai_dir = self._ai_dir()
+        spec_file      = ai_dir / "spec.md"
+        use_cases_file = ai_dir / "use_cases.md"
+        doc_files      = list(docs_dir.glob("*.md"))
+
+        if not doc_files:
+            logger.warning("[spec] no docs found in %s", docs_dir)
+            return spec_file, use_cases_file
+
+        logger.info("[spec] step 1/3 — extract entities (%d docs)", len(doc_files))
+
+        # ── Step 1: extract key entities — small, fast ────────────────────────
+        entities_file = ai_dir / "entities.md"
+        self.run(
+            message=(
+                "Read the docs. List the main entities (nouns) this system works with.\n"
+                "Format: one entity per line, with 1-sentence description.\n"
+                "Max 10 entities. No code. No headers."
+            ),
+            read_files=doc_files,
+            edit_files=[entities_file],
+            timeout=90,
+        )
+
+        # ── Step 2: write spec.md — bounded by entity list ────────────────────
+        context = doc_files + ([entities_file] if entities_file.exists() else [])
+        logger.info("[spec] step 2/3 — write spec.md")
+        self.run(
+            message=(
+                "Write spec.md for this project.\n\n"
+                "Include exactly these sections:\n"
+                "## Problem\nOne paragraph.\n\n"
+                "## Entities\nFor each entity: name, fields (name:type), key behaviour.\n\n"
+                "## API\nFor each endpoint: METHOD /path — what it does, request body, response.\n\n"
+                "## Rules\nBullet list of system-wide rules (invariants).\n\n"
+                "Keep it short. One sentence per point."
+            ),
+            read_files=context,
+            edit_files=[spec_file],
+            timeout=120,
+        )
+
+        # ── Step 3: write 3 use cases ─────────────────────────────────────────
+        context2 = context + ([spec_file] if spec_file.exists() else [])
+        logger.info("[spec] step 3/3 — write use cases")
+        self.run(
+            message=(
+                "Write use_cases.md with the 3 most important use cases.\n\n"
+                "Each use case:\n"
+                "## UC-N: title\n"
+                "Given: ...\n"
+                "When: ...\n"
+                "Then: ...\n"
+                "Error: what goes wrong and why.\n\n"
+                "Keep each case to 6 lines max."
+            ),
+            read_files=context2,
+            edit_files=[use_cases_file],
+            timeout=90,
+        )
+
+        logger.info("[spec] done — spec.md + use_cases.md")
+        return spec_file, use_cases_file
+
+    def _specify_openspec(self, docs_dir: Path) -> tuple[Path, Path]:
+        doc_files    = list(docs_dir.glob("*.md"))
+        project_name = self._project_name()
+        domain       = re.sub(r"[^a-z0-9]+", "-", project_name.lower()).strip("-")
+        change_name  = f"initial-{domain}"
+
+        openspec_root = self.workspace / "openspec"
+        specs_dir     = openspec_root / "specs" / domain
+        change_dir    = openspec_root / "changes" / change_name
+        change_specs  = change_dir / "specs" / domain
+
+        for d in [specs_dir, change_dir, change_specs]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        proposal_file   = change_dir / "proposal.md"
+        delta_spec_file = change_specs / "spec.md"
+        design_file     = change_dir / "design.md"
+        tasks_file      = change_dir / "tasks.md"
+
+        # Step 1: proposal (why + what)
+        logger.info("[spec] openspec step 1/3 — proposal")
+        self.run(
+            message=(
+                f"Write an OpenSpec proposal for project '{project_name}'.\n\n"
+                "Sections:\n"
+                "## Why\nOne paragraph — the problem.\n\n"
+                "## What Changes\nBullet list of capabilities added.\n\n"
+                "## Out of Scope\nBullet list of what is NOT included.\n\n"
+                "Keep it under 200 words."
+            ),
+            read_files=doc_files,
+            edit_files=[proposal_file],
+            timeout=90,
+        )
+
+        # Step 2: delta spec (requirements)
+        logger.info("[spec] openspec step 2/3 — delta spec")
+        ctx = doc_files + ([proposal_file] if proposal_file.exists() else [])
+        self.run(
+            message=(
+                f"Write an OpenSpec delta spec for domain '{domain}'.\n\n"
+                "Format:\n"
+                "# Delta for " + domain + "\n\n"
+                "## ADDED Requirements\n\n"
+                "### Requirement: <name>\n"
+                "The system SHALL <behaviour>.\n\n"
+                "#### Scenario: <name>\n"
+                "- GIVEN ...\n"
+                "- WHEN ...\n"
+                "- THEN ...\n\n"
+                "Write 5-8 requirements. Keep each scenario to 3 lines."
+            ),
+            read_files=ctx,
+            edit_files=[delta_spec_file],
+            timeout=120,
+        )
+
+        # Copy to source-of-truth
+        if delta_spec_file.exists():
+            specs_dir.joinpath("spec.md").write_text(delta_spec_file.read_text())
+
+        # Stubs for architect/planner
+        if not design_file.exists():
+            design_file.write_text(
+                f"# Design: {change_name}\n\n"
+                "_Architect fills this._\n\n"
+                "## Approach\n\n## Key Decisions\n\n## Component Changes\n"
+            )
+        if not tasks_file.exists():
+            tasks_file.write_text(
+                f"# Tasks: {change_name}\n\n"
+                "_Planner fills this._\n\n"
+                "- [ ] 1.1 \n- [ ] 1.2 \n"
+            )
+
+        (openspec_root / "AGENTS.md").write_text(
+            "# OpenSpec\n\nopen openspec/changes/ to find the active change.\n"
+            "Read proposal.md → specs/ → design.md → tasks.md before coding.\n"
+        )
+
+        logger.info("[spec] openspec done")
+        return proposal_file, delta_spec_file
+
+    def _project_name(self) -> str:
+        try:
+            import yaml
+            ws = (self.workspace / "workspace.yaml")
+            if not ws.exists():
+                ws = self.workspace.parent / "workspace.yaml"
+            if ws.exists():
+                return yaml.safe_load(ws.read_text()).get("project", {}).get("name", "project")
+        except Exception:
+            pass
+        return "project"
+
+    def _ai_dir(self) -> Path:
+        d = self.workspace / ".ai"
+        d.mkdir(exist_ok=True)
+        return d

@@ -1,0 +1,60 @@
+# workspace.yaml — copy this file to your project root and fill it in.
+# This is the only file that changes when you use ai-team on a different project.
+
+project:
+  name: my-project
+  description: >
+    One-sentence description of what this project builds.
+  type: greenfield          # greenfield | legacy | migration
+
+paths:
+  docs:     ./docs          # agent team reads these
+  output:   ./output        # agent team writes here
+  registry: ./agent-registry
+
+agent_team:
+  model: qwen2.5-coder:7b   # any ollama model
+  framework: null            # null | bmad-method | your-framework
+  max_rework_task: 3
+  max_rework_iter: 2
+
+output_layout:
+  - path: src/
+    description: Application source code
+    agent_owned: true
+  - path: Makefile
+    agent_owned: true
+
+enforcement:
+  forbidden_in_human_paths:
+    - "**/*.java"
+    - "**/pom.xml"
+    - "**/Dockerfile"
+    - "**/docker-compose.yml"
+    - "**/.github/workflows/*.yml"
+    - "**/Makefile"
+  human_paths:
+    - docs/
+    - ai-team/
+    - comms-server/
+  agent_paths:
+    - src/
+    - api-gateway/
+
+# Uncomment for legacy projects:
+# legacy:
+#   source_dirs:
+#     - src/
+#   agent_instructions: >
+#     This is a legacy codebase. Read existing source for context.
+#     Do not modify existing files. Write new files to output/ only.
+
+# RAG — semantic search context injection
+# Requires: ollama pull nomic-embed-text
+rag:
+  enabled: false
+  embed_model: nomic-embed-text
+  llm_model: qwen2.5-coder:7b
+  top_k: 5
+  # legacy_source_dirs:
+  #   - src/

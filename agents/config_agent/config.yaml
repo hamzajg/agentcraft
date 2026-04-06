@@ -1,0 +1,12 @@
+framework_skills:
+  openspec:
+  - openspec-apply
+  - run-checklist
+id: config_agent
+label: Config
+personas:
+  bmad-method: developer
+  openspec: openspec-developer
+prompt: prompts/config_agent.md
+skills:
+- run-checklist

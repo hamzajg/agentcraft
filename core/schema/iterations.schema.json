@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Iterations",
+  "description": "Architect agent output — ordered list of build iterations",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "name", "goal", "layer", "files_expected", "depends_on", "acceptance_criteria"],
+    "properties": {
+      "id": {
+        "type": "integer",
+        "description": "Monotonically increasing iteration number starting at 1"
+      },
+      "name": {
+        "type": "string",
+        "description": "Short human-readable iteration name, e.g. 'Message model'"
+      },
+      "goal": {
+        "type": "string",
+        "description": "What this iteration achieves when complete"
+      },
+      "layer": {
+        "type": "string",
+        "enum": ["model", "service", "config", "controller", "cli", "docs"]
+      },
+      "files_expected": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Relative paths of all files this iteration must produce"
+      },
+      "depends_on": {
+        "type": "array",
+        "items": { "type": "integer" },
+        "description": "IDs of iterations that must complete before this one"
+      },
+      "acceptance_criteria": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Concrete, verifiable criteria for iteration completion"
+      }
+    }
+  }
+}

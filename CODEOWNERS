@@ -1,0 +1,24 @@
+# CODEOWNERS
+#
+# Human-authored paths require human review on every PR.
+# Agent-generated paths (api-gateway/, openspec/, cli/, etc.) are committed after review.
+#
+# This file enforces that changes to human-authored intent
+# are reviewed by a human, not just merged.
+
+# Docs — all changes require human review
+/docs/                  @human-team
+
+# Agent team build system — requires senior review
+/agents/               @human-team
+
+# Comms server — human/agent interface
+/comms-server/          @human-team
+
+# Project config
+/workspace.yaml         @human-team
+/.gitignore             @human-team
+/README.md              @human-team
+
+# Agent-managed registry configs — reviewed before merging
+/agent-registry/        @human-team

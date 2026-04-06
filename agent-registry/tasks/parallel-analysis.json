@@ -1,0 +1,21 @@
+{
+  "taskType": "parallel-analysis",
+  "aggregationStrategy": "LLM_SUMMARY",
+  "steps": [
+    {
+      "agentId": "java-dev",
+      "promptTemplate": "Analyse this from a Java/backend perspective:\n{input}",
+      "mode": "PARALLEL"
+    },
+    {
+      "agentId": "python-dev",
+      "promptTemplate": "Analyse this from a Python/data perspective:\n{input}",
+      "mode": "PARALLEL"
+    },
+    {
+      "agentId": "general",
+      "promptTemplate": "Analyse this from an architectural perspective:\n{input}",
+      "mode": "PARALLEL"
+    }
+  ]
+}

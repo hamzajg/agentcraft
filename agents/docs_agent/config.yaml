@@ -1,0 +1,14 @@
+framework_skills:
+  openspec:
+  - openspec-propose
+  - create-doc
+  - shard-doc
+id: docs_agent
+label: Docs
+personas:
+  bmad-method: analyst
+  openspec: openspec-analyst
+prompt: prompts/docs_agent.md
+skills:
+- create-doc
+- shard-doc

@@ -1,0 +1,840 @@
+#!/usr/bin/env python3
+"""
+agentcraft — the autonomous AI agent team CLI.
+
+Usage:
+  agentcraft init                  Set up a new project (interactive)
+  agentcraft diagnose              Detect hardware, select optimal models
+  agentcraft build                 Build agents, check violations, setup workspace
+  agentcraft bootstrap             Run agent workflow, keep alive, print logs
+  agentcraft resume --from N       Resume from iteration N
+  agentcraft comms                 Start the human↔agent comms UI
+  agentcraft chat <agent>          Chat with a specific agent via CLI
+  agentcraft monitor               Live system metrics monitor
+  agentcraft rag <subcommand>      RAG repository inspector
+  agentcraft validate              Check ownership boundary
+  agentcraft new-agent <name>      Scaffold a new agent folder
+  agentcraft frameworks            List available frameworks
+  agentcraft skills                List available skills
+
+Run `agentcraft <command> --help` for options.
+"""
+
+import argparse
+import sys
+import os
+from pathlib import Path
+
+# Ensure repo root is on sys.path
+ROOT = Path(__file__).parent.resolve()
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _workspace_yaml() -> Path:
+    return ROOT / "workspace.yaml"
+
+
+def _load_ws() -> dict:
+    p = _workspace_yaml()
+    if not p.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(p.read_text()) or {}
+    except Exception:
+        return {}
+
+
+def _require_yaml(parser):
+    if not _workspace_yaml().exists():
+        parser.error(
+            "workspace.yaml not found.\n"
+            "  Run: agentcraft init   to create one for your project."
+        )
+
+
+# ── init ──────────────────────────────────────────────────────────────────────
+
+def cmd_init(args):
+    """Interactive project initialisation."""
+    print("\n  AgentCraft — Project Initialisation\n")
+
+    ws = _load_ws()
+    existing = bool(ws)
+
+    if existing:
+        print(f"  Found existing workspace.yaml for project: {ws.get('project', {}).get('name', '?')}")
+        if not args.force:
+            ans = input("  Re-initialise? [y/N] ").strip().lower()
+            if ans != "y":
+                print("  Aborted.")
+                return
+
+    name    = input("  Project name:        ").strip() or "my-project"
+    ptype   = input("  Type [greenfield/legacy] (default: greenfield): ").strip() or "greenfield"
+    docs    = input("  Docs directory       (default: ./docs): ").strip() or "./docs"
+    model   = input("  Ollama model         (default: auto-detect): ").strip()
+    framework = input("  Framework [bmad-method/openspec/none] (default: none): ").strip() or ""
+
+    import yaml
+
+    ws_data = {
+        "project": {
+            "name": name,
+            "type": ptype,
+        },
+        "paths": {
+            "docs":   docs,
+            "output": ".",
+        },
+        "agent_team": {
+            "model":            model or "qwen2.5-coder:7b",
+            "framework":        framework or None,
+            "max_rework_task":  3,
+            "max_rework_iter":  2,
+        },
+        "rag": {
+            "enabled":     False,
+            "embed_model": "nomic-embed-text",
+            "llm_model":   model or "qwen2.5-coder:7b",
+            "top_k":       5,
+            "store_path":  ".rag",
+        },
+        "enforcement": {
+            "forbidden_in_human_paths": [
+                "**/*.java", "**/pom.xml", "**/Dockerfile",
+                "**/docker-compose.yml", "**/.github/workflows/*.yml", "**/Makefile",
+            ],
+            "human_paths":  ["docs/", "agents/", "core/", "comms/", "frameworks/", "skills/"],
+            "agent_paths":  ["api-gateway/", "openspec/", "cli/"],
+        },
+    }
+
+    _workspace_yaml().write_text(yaml.dump(ws_data, default_flow_style=False))
+    print(f"\n  Created workspace.yaml for '{name}'")
+
+    # Create docs directory if needed
+    docs_path = ROOT / docs.lstrip("./")
+    if not docs_path.exists():
+        docs_path.mkdir(parents=True)
+        print(f"  Created {docs}/")
+        print(f"  Add your project docs to {docs}/ before running: agentcraft build")
+
+    print("""
+  Next steps:
+    agentcraft diagnose       detect hardware, select models
+    agentcraft build          run the agent team
+    agentcraft comms          start the chat UI
+""")
+
+
+# ── diagnose ─────────────────────────────────────────────────────────────────
+
+def cmd_diagnose(args):
+    """Hardware detection and model selection."""
+    from core.diagnose import main as diagnose_main
+    sys.argv = ["diagnose"]
+    if args.pull:    sys.argv.append("--pull")
+    if args.dry_run: sys.argv.append("--dry-run")
+    if args.tier:    sys.argv += ["--force-tier", args.tier]
+    diagnose_main()
+
+
+# ── build ─────────────────────────────────────────────────────────────────────
+
+def cmd_build(args):
+    """Run the full agent team build."""
+    import shutil
+
+    ws = _load_ws()
+    _require_yaml(build_parser)
+
+    team     = ws.get("agent_team", {})
+    paths    = ws.get("paths", {})
+    rag_cfg  = ws.get("rag", {})
+    project  = ws.get("project", {})
+
+    model     = args.model     or team.get("model", "qwen2.5-coder:7b")
+    framework = args.framework or team.get("framework")
+    docs_dir  = ROOT / paths.get("docs", "docs")
+    workspace = ROOT / paths.get("output", ".")
+
+    if args.rag:   rag_cfg["enabled"] = True
+    if args.no_rag: rag_cfg["enabled"] = False
+
+    if not shutil.which("aider"):
+        print("ERROR: aider not found. Run: agentcraft init --deps")
+        sys.exit(1)
+
+    if not docs_dir.exists():
+        print(f"ERROR: docs dir not found: {docs_dir}")
+        sys.exit(1)
+
+    # Check for empty docs - may need collaboration
+    doc_files = list(docs_dir.glob("*.md"))
+    needs_collaboration = len(doc_files) == 0
+
+    # Build should only prepare agents; do not start the comms server here.
+    # If collaboration is needed, the user can run `agentcraft comms` or
+    # `agentcraft bootstrap` when ready.
+
+    # Validate before building
+    if not args.no_validate:
+        from core.validate.validate import main as validate_main
+        sys.argv = ["validate", "--quiet"]
+        try:
+            validate_main()
+        except SystemExit as e:
+            if e.code != 0:
+                print("Ownership boundary violations found.")
+                print("  Run: agentcraft validate   for details")
+                print("  Use: --no-validate          to skip (not recommended)")
+                sys.exit(1)
+
+    if framework:
+        from core.framework_loader import FrameworkLoader
+        if framework not in FrameworkLoader.list_frameworks():
+            print(f"ERROR: Unknown framework '{framework}'")
+            print(f"       Available: {FrameworkLoader.list_frameworks()}")
+            sys.exit(1)
+
+    if rag_cfg.get("enabled"):
+        import subprocess
+        subprocess.run(["ollama", "pull", rag_cfg.get("embed_model", "nomic-embed-text")], check=False)
+
+    import subprocess
+    subprocess.run(["ollama", "pull", model], check=False)
+
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(".ai/build.log", mode="a") if (ROOT / ".ai").exists()
+            else logging.NullHandler(),
+        ],
+    )
+    (ROOT / ".ai").mkdir(exist_ok=True)
+
+    from core.orchestrator import Orchestrator
+
+    legacy_dirs = []
+    if ws.get("project", {}).get("type") == "legacy":
+        for d in rag_cfg.get("legacy_source_dirs", []):
+            p = ROOT / d
+            if p.exists():
+                legacy_dirs.append(p)
+
+    orch = Orchestrator(
+        model=model,
+        docs_dir=docs_dir,
+        workspace=workspace,
+        framework_id=framework,
+        max_rework_per_task=args.max_rework_task or team.get("max_rework_task", 3),
+        max_rework_per_iter=args.max_rework_iter or team.get("max_rework_iter", 2),
+        start_from_iteration=args.from_iter,
+        skip_spec=args.skip_spec,
+        rag_config=rag_cfg,
+        legacy_dirs=legacy_dirs,
+        parallel=args.parallel,
+    )
+
+    if args.phase:
+        orig = orch.architect.plan
+        def _filtered(docs_dir):
+            return [i for i in orig(docs_dir) if i.get("phase", 1) == args.phase]
+        orch.architect.plan = _filtered
+
+    if args.dry_run:
+        print(f"\n  DRY RUN — {project.get('name', '?')} ({model})")
+        print(f"  Framework: {framework or 'none'}")
+        print(f"  Docs:      {docs_dir}  ({len(list(docs_dir.glob('*.md')))} files)")
+        print(f"  Workspace: {workspace}")
+        return
+
+    # Build phase: prepare agents and workspace
+    orch.prepare()
+    
+    # Check if we need collaboration
+    needs_collaboration = not any(docs_dir.glob("*.md"))
+    
+    if needs_collaboration:
+        print(f"\n  Build complete: agents prepared for phase 0 collaboration")
+        print("  Run the following to start the agent workflow:")
+        print("    agentcraft bootstrap")
+        print("  Or open the comms UI for collaboration:")
+        print("    agentcraft comms")
+    else:
+        print(f"\n  Build complete: agents prepared and ready")
+        print("  Run the following to start the agent workflow:")
+        print("    agentcraft bootstrap")
+
+
+# ── bootstrap ────────────────────────────────────────────────────────────────
+
+def cmd_bootstrap(args):
+    """Run the agent workflow (long-running execution phase)."""
+    import shutil
+
+    ws = _load_ws()
+    _require_yaml(bootstrap_parser)
+
+    team     = ws.get("agent_team", {})
+    paths    = ws.get("paths", {})
+    rag_cfg  = ws.get("rag", {})
+    project  = ws.get("project", {})
+
+    model     = args.model     or team.get("model", "qwen2.5-coder:7b")
+    framework = args.framework or team.get("framework")
+    docs_dir  = ROOT / paths.get("docs", "docs")
+    workspace = ROOT / paths.get("output", ".")
+
+    if args.rag:   rag_cfg["enabled"] = True
+    if args.no_rag: rag_cfg["enabled"] = False
+
+    if not shutil.which("aider"):
+        print("ERROR: aider not found. Run: agentcraft init --deps")
+        sys.exit(1)
+
+    if not docs_dir.exists():
+        print(f"ERROR: docs dir not found: {docs_dir}")
+        sys.exit(1)
+
+    # Check for empty docs - may need collaboration
+    doc_files = list(docs_dir.glob("*.md"))
+    needs_collaboration = len(doc_files) == 0
+
+    # Start comms server early - keep it running throughout the entire build
+    comms_process = None
+    print("  Starting comms server for agent collaboration...")
+    import subprocess
+    import time
+    try:
+        comms_process = subprocess.Popen([
+            sys.executable, "-m", "uvicorn", "comms.main:app", 
+            f"--port={7000}", "--log-level=warning"
+        ], cwd=str(ROOT))
+        # Wait for server to start
+        time.sleep(3)
+        print("  Comms server ready at http://localhost:7000")
+        print("  Open the URL above to collaborate with agents during bootstrap.")
+    except Exception as e:
+        print(f"  Warning: Could not start comms server: {e}")
+        print("  You can start it manually: python agentcraft comms")
+
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(".ai/bootstrap.log", mode="a") if (ROOT / ".ai").exists()
+            else logging.NullHandler(),
+        ],
+    )
+    (ROOT / ".ai").mkdir(exist_ok=True)
+
+    from core.orchestrator import Orchestrator
+
+    legacy_dirs = []
+    if ws.get("project", {}).get("type") == "legacy":
+        for d in rag_cfg.get("legacy_source_dirs", []):
+            p = ROOT / d
+            if p.exists():
+                legacy_dirs.append(p)
+
+    orch = Orchestrator(
+        model=model,
+        docs_dir=docs_dir,
+        workspace=workspace,
+        framework_id=framework,
+        max_rework_per_task=args.max_rework_task or team.get("max_rework_task", 3),
+        max_rework_per_iter=args.max_rework_iter or team.get("max_rework_iter", 2),
+        start_from_iteration=args.from_iter,
+        skip_spec=args.skip_spec,
+        rag_config=rag_cfg,
+        legacy_dirs=legacy_dirs,
+        parallel=args.parallel,
+    )
+
+    if args.phase:
+        orig = orch.architect.plan
+        def _filtered(docs_dir):
+            return [i for i in orig(docs_dir) if i.get("phase", 1) == args.phase]
+        orch.architect.plan = _filtered
+
+    # Bootstrap phase: run the agent workflow
+    run_log = orch.run()
+    approved = sum(1 for i in run_log.iterations if i.approved)
+    
+    if not any(docs_dir.glob("*.md")):
+        print(f"\n  Bootstrap complete: phase 0 collaboration finished")
+        print("  Agents are ready for the next phase.")
+        print("  You can:")
+        print("    1. Review the generated docs/ and make changes")
+        print("    2. Run 'agentcraft bootstrap' again to proceed")
+        print("    3. Run 'agentcraft resume --from <iteration>' to continue from a specific point")
+    else:
+        print(f"\n  Bootstrap complete: {approved}/{len(run_log.iterations)} iterations approved")
+        print(f"  Log: .ai/run_log.json")
+        print(f"\n  Review and commit agent output:")
+        print(f"    git add api-gateway/ openspec/ && git commit -m 'feat: agent output'")
+    
+    # Keep comms server running for a moment, then clean up
+    if comms_process:
+        print("\n  Comms server still running at http://localhost:7000")
+        print("  You can continue collaborating or press Ctrl+C to stop.")
+        try:
+            comms_process.wait()  # Wait for manual termination
+        except KeyboardInterrupt:
+            print("  Stopping comms server...")
+            comms_process.terminate()
+            comms_process.wait()
+
+
+# ── comms ─────────────────────────────────────────────────────────────────────
+
+def cmd_comms(args):
+    """Start the human↔agent communication UI."""
+    import subprocess, shutil
+    if not shutil.which("uvicorn"):
+        print("Installing uvicorn...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "uvicorn", "fastapi"], check=True)
+
+    comms_dir = ROOT / "comms"
+    port = args.port or 7000
+
+    if args.build_ui:
+        print("Building React UI...")
+        subprocess.run(["bash", str(comms_dir / "build.sh")], check=True)
+
+    print(f"  Starting comms server on http://localhost:{port}")
+    subprocess.run(
+        ["uvicorn", "comms.main:app", f"--port={port}",
+         "--reload" if args.dev else "--workers=1"],
+        cwd=str(ROOT),
+    )
+
+
+# ── chat ───────────────────────────────────────────────────────────────────
+
+def cmd_chat(args):
+    """Chat with a specific agent via CLI."""
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    ws = _load_ws()
+    _require_yaml(chat_parser)
+
+    team     = ws.get("agent_team", {})
+    paths    = ws.get("paths", {})
+    rag_cfg  = ws.get("rag", {})
+
+    model     = args.model     or team.get("model", "qwen2.5-coder:7b")
+    framework = args.framework or team.get("framework")
+    docs_dir  = ROOT / paths.get("docs", "docs")
+    workspace = ROOT / paths.get("output", ".")
+
+    if args.rag:   rag_cfg["enabled"] = True
+    if args.no_rag: rag_cfg["enabled"] = False
+
+    # Validate agent exists
+    try:
+        from agents import _load_agent_class
+        agent_class = _load_agent_class(args.agent)
+    except ImportError:
+        print(f"ERROR: Agent '{args.agent}' not found")
+        print("Available agents:", ", ".join(["architect", "backend_dev", "config_agent", "docs_agent", "planner", "reviewer", "spec", "test_dev", "integration_test", "cicd"]))
+        sys.exit(1)
+
+    # Set up RAG if enabled
+    rag_client = None
+    llm_client = None
+    if rag_cfg.get("enabled"):
+        from rag import RagClient
+        from core.llm import OllamaClient
+        store_path = workspace / ".rag"
+        embed_model = rag_cfg.get("embed_model", "nomic-embed-text")
+        rag_client = RagClient(store_path=store_path, embed_model=embed_model)
+        if not rag_client.setup():
+            print("WARNING: RAG setup failed, continuing without RAG")
+            rag_client = None
+        llm_model = rag_cfg.get("llm_model", model)
+        llm_client = OllamaClient(model=llm_model, temperature=0.2)
+
+    # Create agent instance
+    agent = agent_class(
+        model=model,
+        workspace=workspace,
+        system_prompt=None,  # Will use default
+        skills=[],
+        framework_id=framework,
+        rag_client=rag_client,
+        llm_client=llm_client,
+    )
+
+    print(f"\n🤖 Chatting with {args.agent}")
+    print("Type your message (or 'quit' to exit):")
+    print("-" * 50)
+
+    while True:
+        try:
+            user_input = input("\nYou: ").strip()
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                break
+            if not user_input:
+                continue
+
+            print(f"\n{args.agent.title()}: ", end="", flush=True)
+            
+            # Use the agent's run method for actual collaboration
+            try:
+                result = agent.run(
+                    message=user_input,
+                    read_files=list(docs_dir.glob("*.md")) if docs_dir.exists() else [],
+                    edit_files=[],  # No file editing in chat mode
+                    timeout=60,
+                )
+                if result.get("success"):
+                    # Extract the response from the result
+                    response = result.get("stdout", "").strip()
+                    if not response:
+                        response = "I processed your message but have no specific response."
+                    print(response)
+                else:
+                    error = result.get("stderr", "Unknown error")
+                    print(f"Error: {error}")
+            except Exception as e:
+                print(f"Error communicating with agent: {e}")
+
+        except KeyboardInterrupt:
+            print("\n\nGoodbye!")
+            break
+        except EOFError:
+            break
+
+    if rag_client:
+        rag_client.close()
+
+
+# ── monitor ───────────────────────────────────────────────────────────────────
+
+def cmd_monitor(args):
+    """Live system metrics monitor."""
+    from monitor.cli import run
+    run(interval=args.interval, once=args.once)
+
+
+# ── rag ───────────────────────────────────────────────────────────────────────
+
+def cmd_rag(args):
+    """RAG repository inspector."""
+    # Delegate to rag_cli with the sub-subcommand
+    from rag.rag_cli import main as rag_main
+    # Reconstruct sys.argv so rag_cli's argparser sees the right subcommand
+    sub_args = [args.subcommand]
+    if hasattr(args, "query") and args.query:
+        sub_args.append(args.query)
+    if hasattr(args, "top") and args.top:
+        sub_args += ["--top", str(args.top)]
+    if hasattr(args, "limit") and args.limit:
+        sub_args += ["--limit", str(args.limit)]
+    if hasattr(args, "force") and args.force:
+        sub_args.append("--force")
+    sys.argv = ["agentcraft rag"] + sub_args
+    rag_main()
+
+
+# ── validate ─────────────────────────────────────────────────────────────────
+
+def cmd_validate(args):
+    """Check ownership boundary."""
+    from core.validate.validate import main as validate_main
+    sys.argv = ["validate"] + (["--staged"] if args.staged else [])
+    validate_main()
+
+
+# ── new-agent ─────────────────────────────────────────────────────────────────
+
+def cmd_new_agent(args):
+    """Scaffold a new agent folder."""
+    name      = args.name
+    agent_dir = ROOT / "agents" / name
+
+    if agent_dir.exists():
+        print(f"Agent '{name}' already exists at agents/{name}/")
+        sys.exit(1)
+
+    agent_dir.mkdir(parents=True)
+
+    # agent.py
+    (agent_dir / "agent.py").write_text(f'''"""
+{name}/agent.py — {name} agent.
+"""
+from pathlib import Path
+from core.base import AiderAgent
+
+SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text()
+
+
+class {_to_class_name(name)}(AiderAgent):
+    _role = "{name}"
+
+    def __init__(self, model: str, workspace: Path,
+                 system_prompt: str = None, skills: list = None,
+                 framework_id: str = None, task_id: str = None,
+                 iteration_id: int = None, **kwargs):
+        super().__init__(
+            role="{name}",
+            model=model,
+            workspace=workspace,
+            system_prompt=system_prompt or SYSTEM_PROMPT,
+            skills=skills or [],
+            framework_id=framework_id,
+            task_id=task_id,
+            iteration_id=iteration_id,
+            **kwargs,
+        )
+
+    def run_task(self, task: dict, docs_dir: Path) -> dict:
+        \"\"\"Implement your agent\\'s main task here.\"\"\"
+        target = self.workspace / task["file"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return self.run(
+            message=task.get("description", ""),
+            read_files=list(docs_dir.glob("*.md")),
+            edit_files=[target],
+            timeout=300,
+        )
+''')
+
+    # config.yaml
+    import yaml
+    config = {
+        "id":     name,
+        "label":  name.replace("_", " ").title(),
+        "prompt": f"agents/{name}/prompt.md",
+        "skills": ["run-checklist"],
+        "personas": {},
+    }
+    (agent_dir / "config.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+    # prompt.md
+    (agent_dir / "prompt.md").write_text(f"""# {name.replace("_", " ").title()} Agent
+
+You are a specialised AI agent in an autonomous development team.
+
+## Your responsibility
+
+<!-- Describe what this agent does -->
+
+## Output contract
+
+<!-- What files does this agent produce? What are the quality criteria? -->
+
+## Rules
+
+<!-- What must this agent always / never do? -->
+""")
+
+    print(f"""
+  Created agents/{name}/
+    ├── agent.py     ← AgentClass with run_task() method
+    ├── config.yaml  ← skills, personas, framework overrides
+    └── prompt.md    ← system prompt (fill this in)
+
+  Edit agents/{name}/prompt.md to define the agent's behaviour.
+  Then register it in core/orchestrator.py if needed for automated builds.
+""")
+
+
+# ── frameworks / skills info ──────────────────────────────────────────────────
+
+def cmd_frameworks(args):
+    from core.framework_loader import FrameworkLoader
+    fws = FrameworkLoader.list_frameworks()
+    print(f"\n  {len(fws)} framework(s) available:\n")
+    for fw in fws:
+        try:
+            fl = FrameworkLoader(fw)
+            info = fl.describe()
+            print(f"  {fw}")
+            print(f"    {info.get('label', fw)}")
+            agents = list(info.get('agents', {}).keys())
+            print(f"    Agents: {', '.join(agents[:5])}{'...' if len(agents) > 5 else ''}")
+        except Exception:
+            print(f"  {fw}")
+    print()
+
+
+def cmd_skills(args):
+    from core.skill_runner import SkillRunner
+    sr = SkillRunner(framework_id=args.framework)
+    skills = sr.list_available()
+    print(f"\n  {len(skills)} skill(s) available"
+          + (f" (framework: {args.framework})" if args.framework else "") + ":\n")
+    for s in skills:
+        print(f"  {s}")
+    print()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _to_class_name(name: str) -> str:
+    return "".join(w.title() for w in name.split("_")) + "Agent"
+
+
+# ── Parser ────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="agentcraft",
+        description="Autonomous AI agent team — build software from docs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subs = parser.add_subparsers(dest="command", metavar="<command>")
+
+    # ── init ──────────────────────────────────────────────────────────────────
+    p = subs.add_parser("init", help="Set up a new project (interactive)")
+    p.add_argument("--force", action="store_true", help="Re-initialise even if workspace.yaml exists")
+    p.add_argument("--deps",  action="store_true", help="Also install Python dependencies")
+    p.set_defaults(func=cmd_init)
+
+    # ── diagnose ──────────────────────────────────────────────────────────────
+    p = subs.add_parser("diagnose", help="Detect hardware, select optimal models")
+    p.add_argument("--pull",    action="store_true", help="Pull selected models from Ollama")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Show only, no writes")
+    p.add_argument("--tier",    choices=["minimal","standard","performance","high-end"],
+                   help="Override detected tier")
+    p.set_defaults(func=cmd_diagnose)
+
+    # ── build ─────────────────────────────────────────────────────────────────
+    global build_parser
+    p = build_parser = subs.add_parser("build", help="Run the full agent team build")
+    p.add_argument("--model",           default=None)
+    p.add_argument("--framework",       default=None)
+    p.add_argument("--phase",           type=int, default=None)
+    p.add_argument("--from",            type=int, default=1, dest="from_iter", metavar="N")
+    p.add_argument("--skip-spec",       action="store_true")
+    p.add_argument("--rag",             action="store_true", default=None)
+    p.add_argument("--no-rag",          action="store_true")
+    p.add_argument("--max-rework-task", type=int, default=None)
+    p.add_argument("--max-rework-iter", type=int, default=None)
+    p.add_argument("--no-validate",     action="store_true")
+    p.add_argument("--parallel",        action="store_true", help="Run agents in parallel (experimental)")
+    p.add_argument("--dry-run",         action="store_true")
+    p.set_defaults(func=cmd_build)
+
+    # ── bootstrap ─────────────────────────────────────────────────────────────
+    global bootstrap_parser
+    p = bootstrap_parser = subs.add_parser("bootstrap", help="Run the agent workflow (execution phase)")
+    p.add_argument("--model",           default=None)
+    p.add_argument("--framework",       default=None)
+    p.add_argument("--phase",           type=int, default=None)
+    p.add_argument("--from",            type=int, default=1, dest="from_iter", metavar="N")
+    p.add_argument("--skip-spec",       action="store_true")
+    p.add_argument("--rag",             action="store_true", default=None)
+    p.add_argument("--no-rag",          action="store_true")
+    p.add_argument("--max-rework-task", type=int, default=None)
+    p.add_argument("--max-rework-iter", type=int, default=None)
+    p.add_argument("--parallel",        action="store_true", help="Run agents in parallel (experimental)")
+    p.set_defaults(func=cmd_bootstrap)
+
+    # ── resume ────────────────────────────────────────────────────────────────
+    p = subs.add_parser("resume", help="Resume build from a specific iteration")
+    p.add_argument("--from", type=int, required=True, dest="from_iter", metavar="N")
+    p.add_argument("--model", default=None)
+    p.add_argument("--framework", default=None)
+    p.add_argument("--rag", action="store_true", default=None)
+    p.add_argument("--no-rag", action="store_true")
+    p.add_argument("--no-validate", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--phase", type=int, default=None)
+    p.add_argument("--skip-spec", action="store_true", default=True)
+    p.add_argument("--max-rework-task", type=int, default=None)
+    p.add_argument("--max-rework-iter", type=int, default=None)
+    p.set_defaults(func=cmd_build)
+
+    # ── comms ─────────────────────────────────────────────────────────────────
+    p = subs.add_parser("comms", help="Start the human↔agent comms UI")
+    p.add_argument("--port",     type=int, default=7000)
+    p.add_argument("--dev",      action="store_true", help="Hot-reload mode")
+    p.add_argument("--build-ui", action="store_true", help="Rebuild React frontend first")
+    p.set_defaults(func=cmd_comms)
+
+    # ── chat ──────────────────────────────────────────────────────────────────
+    global chat_parser
+    p = chat_parser = subs.add_parser("chat", help="Chat with a specific agent via CLI")
+    p.add_argument("agent", help="Agent name (e.g. architect, backend_dev)")
+    p.add_argument("--model", default=None)
+    p.add_argument("--framework", default=None)
+    p.add_argument("--rag", action="store_true", default=None)
+    p.add_argument("--no-rag", action="store_true")
+    p.set_defaults(func=cmd_chat)
+
+    # ── monitor ───────────────────────────────────────────────────────────────
+    p = subs.add_parser("monitor", help="Live system metrics monitor")
+    p.add_argument("--interval", type=float, default=2.0, help="Refresh interval (s)")
+    p.add_argument("--once",     action="store_true", help="Single snapshot and exit")
+    p.set_defaults(func=cmd_monitor)
+
+    # ── rag ───────────────────────────────────────────────────────────────────
+    p = subs.add_parser("rag", help="RAG repository inspector")
+    rag_subs = p.add_subparsers(dest="subcommand")
+    rag_subs.add_parser("stats",       help="Index health summary")
+    rag_subs.add_parser("collections", help="Breakdown by collection")
+    rag_subs.add_parser("languages",   help="Breakdown by language")
+
+    pf = rag_subs.add_parser("files",   help="Per-file breakdown")
+    pf.add_argument("--top", type=int, default=50)
+
+    pq = rag_subs.add_parser("queries", help="Query activity log")
+    pq.add_argument("--limit", type=int, default=20)
+
+    ps = rag_subs.add_parser("search",  help="Test semantic search")
+    ps.add_argument("query")
+    ps.add_argument("--top-k", type=int, default=5)
+
+    rag_subs.add_parser("reset",    help="Clear query log")
+    pri = rag_subs.add_parser("reindex", help="Re-index docs and repo")
+    pri.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_rag)
+
+    # ── validate ──────────────────────────────────────────────────────────────
+    p = subs.add_parser("validate", help="Check ownership boundary")
+    p.add_argument("--staged", action="store_true", help="Check staged files only (pre-commit)")
+    p.set_defaults(func=cmd_validate)
+
+    # ── new-agent ─────────────────────────────────────────────────────────────
+    p = subs.add_parser("new-agent", help="Scaffold a new agent folder")
+    p.add_argument("name", help="Agent name (snake_case, e.g. security_auditor)")
+    p.set_defaults(func=cmd_new_agent)
+
+    # ── frameworks / skills ───────────────────────────────────────────────────
+    p = subs.add_parser("frameworks", help="List available frameworks")
+    p.set_defaults(func=cmd_frameworks)
+
+    p = subs.add_parser("skills", help="List available skills")
+    p.add_argument("--framework", default=None)
+    p.set_defaults(func=cmd_skills)
+
+    # ── parse and dispatch ────────────────────────────────────────────────────
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return
+
+    if not hasattr(args, "func"):
+        parser.error(f"Unknown command: {args.command}")
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
