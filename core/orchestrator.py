@@ -275,20 +275,28 @@ class Orchestrator:
                     logger.info("[orchestrator] phase 0 legacy scanning complete")
                     
                 else:  # greenfield_clarify
-                    # Greenfield project: ask architect to collaborate with user for specs
-                    logger.info("[orchestrator] PHASE 0: greenfield clarification")
+                    # Greenfield project: supervisor defines plan, architect collaborates with user for specs
+                    logger.info("[orchestrator] PHASE 0: greenfield clarification with supervisor-architect collaboration")
                     
-                    # Architect will prompt for clarification and generate docs
-                    iterations = self.architect.plan(self.docs_dir)
-                    if not iterations:
-                        # Waiting for user input
-                        logger.info("[orchestrator] architect initiated collaboration - waiting for user input")
+                    # Supervisor executes phase 0 plan using architect for clarification
+                    workspace_config = {
+                        "docs_dir": str(self.docs_dir),
+                        "project": {
+                            "architecture": architecture,
+                            "type": project_type
+                        }
+                    }
+                    
+                    success = self.supervisor.execute_phase_0_plan(self.architect, workspace_config)
+                    
+                    if not success:
+                        logger.warning("[orchestrator] phase 0 collaboration failed - no user response")
                         if self._rag:
                             self._rag.close()
                         self.run_log.completed = True
                         self.run_log.total_duration_s = round(time.time() - total_start, 1)
                         self._save_log()
-                        self._banner("PHASE 0 — GREENFIELD COLLABORATION ACTIVE")
+                        self._banner("PHASE 0 — COLLABORATION FAILED")
                         return self.run_log
                 
                 # Check if docs were generated

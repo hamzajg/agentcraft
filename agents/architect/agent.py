@@ -117,203 +117,9 @@ class ArchitectAgent(AiderAgent):
 
         doc_files = list(docs_dir.glob("*.md"))
         if not doc_files:
-            logger.info("[architect] no docs found in %s - entering phase 0 collaboration", docs_dir)
-            
-            # Phase 0: No docs yet - ask user for project guidance
-            try:
-                from comms.clarification_client import ClarificationClient
-                clarifier = ClarificationClient(
-                    agent_id="architect", 
-                    task_id="phase-0-planning",
-                    iteration_id=0
-                )
-                
-                question = """
-I'm the Architect agent, and I see we don't have any project documentation yet. 
-
-To create a proper development plan, I need to understand what kind of project you want to build. Please tell me:
-
-1. **What is your project about?** (e.g., "a task management web app", "an AI chatbot platform", "a data analytics dashboard")
-
-2. **What are the main features/goals?** (e.g., "users can create and assign tasks", "integrate with external APIs")
-
-3. **Any technical preferences?** (e.g., "React frontend", "Python backend", "microservices architecture")
-
-Or, if you prefer, you can create documentation files in the `docs/` directory first:
-- `docs/blueprint.md` - high-level project vision
-- `docs/requirements.md` - detailed requirements  
-- `docs/architecture.md` - technical approach
-
-What would you like to do? I can help create documentation or answer questions about the development process.
-"""
-                
-                reply = clarifier.ask(
-                    question=question,
-                    suggestions=[
-                        "I want to create docs/blueprint.md for a task management app",
-                        "Help me plan a web application project",
-                        "I already have docs ready - please check docs/ directory",
-                        "Tell me what documentation I should create first"
-                    ],
-                    timeout=3600  # 1 hour for initial planning
-                )
-                
-                logger.info("[architect] received guidance: %s", reply[:100])
-                
-                # Process user's reply - generate initial iterations from their description
-                logger.info("[architect] processing user guidance to generate initial iterations...")
-                
-                # Create a basic blueprint doc from user's description  
-                blueprint_path = docs_dir / "blueprint.md"
-                blueprint_content = f"""# Project Blueprint
-
-## User's Vision
-{reply}
-
-## Initial Structure
-Based on your description, here's a starting structure for this project:
-
-### Phases
-1. **Phase 1: Core Models** - Define data models and domain entities
-2. **Phase 2: API Foundation** - Build base API endpoints and services
-3. **Phase 3: Integration** - Add features and integrations
-4. **Phase 4: Polish** - Testing, documentation, deployment prep
-
-## Next Steps
-The agents will now analyze this vision and create detailed iteration plans.
-Review and adjust these in your docs/ directory if needed.
-"""
-                blueprint_path.write_text(blueprint_content)
-                logger.info("[architect] created blueprint.md from user guidance")
-                
-                self.share_context("phase0.blueprint", {
-                    "path": str(blueprint_path.relative_to(self.workspace)),
-                    "vision": reply,
-                    "summary": "Initial project blueprint generated from user guidance.",
-                })
-                self.broadcast("docs_generated", {
-                    "path": str(blueprint_path.relative_to(self.workspace)),
-                    "reason": "phase0 planning",
-                    "notes": "Architect generated initial project blueprint from user input.",
-                })
-                
-                # Generate a basic iteration plan directly from user input in phase 0
-                # No need to call Aider for simple iteration generation
-                logger.info("[architect] generating basic iterations from user guidance...")
-                
-                basic_iterations = [
-                    {
-                        "id": 1,
-                        "phase": 1,
-                        "name": "Project foundation & core models",
-                        "goal": "Set up project structure and define core domain entities",
-                        "layer": "model",
-                        "files_expected": ["src/main/java/.../models/Task.java", "src/main/java/.../models/User.java"],
-                        "depends_on": [],
-                        "acceptance_criteria": [
-                            "Core entity models compile",
-                            "All required fields present",
-                            "Basic validation logic works"
-                        ]
-                    },
-                    {
-                        "id": 2,
-                        "phase": 1,
-                        "name": "Service layer for business logic",
-                        "goal": "Implement core business services (task management, user auth)",
-                        "layer": "service-core",
-                        "files_expected": ["src/main/java/.../services/TaskService.java", "src/main/java/.../services/AuthService.java"],
-                        "depends_on": [1],
-                        "acceptance_criteria": [
-                            "Services created and tested",
-                            "Business rules enforced",
-                            "In-memory data structures work"
-                        ]
-                    },
-                    {
-                        "id": 3,
-                        "phase": 1,
-                        "name": "CLI interface & application entry point",
-                        "goal": "Create CLI that exercises core business logic",
-                        "layer": "cli",
-                        "files_expected": ["src/main/java/.../Application.java", "src/main/java/.../cli/CliInterface.java"],
-                        "depends_on": [1, 2],
-                        "acceptance_criteria": [
-                            "CLI runs successfully",
-                            "Can create tasks, users, and teams via CLI",
-                            "All core functionality accessible through CLI"
-                        ]
-                    },
-                    {
-                        "id": 4,
-                        "phase": 2,
-                        "name": "REST API controllers",
-                        "goal": "Expose business logic via HTTP endpoints",
-                        "layer": "controller",
-                        "files_expected": ["src/main/java/.../controllers/TaskController.java", "src/main/java/.../controllers/AuthController.java"],
-                        "depends_on": [1, 2],
-                        "acceptance_criteria": [
-                            "Controllers created and mapped",
-                            "Endpoints respond to HTTP requests",
-                            "Request/response serialization works"
-                        ]
-                    },
-                    {
-                        "id": 5,
-                        "phase": 2,
-                        "name": "Spring Boot integration & configuration",
-                        "goal": "Wire Spring Boot with business logic and controllers",
-                        "layer": "config",
-                        "files_expected": ["src/main/resources/application.properties", "src/main/java/.../config/AppConfig.java"],
-                        "depends_on": [1, 2, 4],
-                        "acceptance_criteria": [
-                            "Spring Boot starts successfully",
-                            "Dependency injection configured",
-                            "Server listens on configured port"
-                        ]
-                    },
-                    {
-                        "id": 6,
-                        "phase": 3,
-                        "name": "CI/CD pipeline setup",
-                        "goal": "Configure GitHub Actions and deployment",
-                        "layer": "cicd",
-                        "files_expected": [".github/workflows/build.yml", ".github/workflows/deploy.yml"],
-                        "depends_on": [],
-                        "acceptance_criteria": [
-                            "GitHub Actions workflows created",
-                            "Build pipeline works",
-                            "Tests run automatically on push"
-                        ]
-                    },
-                    {
-                        "id": 7,
-                        "phase": 3,
-                        "name": "Docker containerization",
-                        "goal": "Create Docker image for deployment",
-                        "layer": "infra",
-                        "files_expected": ["Dockerfile", "docker-compose.yml"],
-                        "depends_on": [1, 2, 4, 5],
-                        "acceptance_criteria": [
-                            "Docker image builds successfully",
-                            "Container runs the application",
-                            "All services accessible from container"
-                        ]
-                    }
-                ]
-                
-                # Save the basic iterations
-                iterations_file = ai_dir / "iterations.json"
-                iterations_file.write_text(json.dumps(basic_iterations, indent=2))
-                logger.info("[architect] generated %d basic iterations from phase 0 user input", len(basic_iterations))
-                return basic_iterations
-                
-            except ImportError:
-                logger.warning("[architect] comms not available - cannot collaborate in phase 0")
-                return []
-            except Exception as e:
-                logger.error("[architect] clarification failed: %s", e)
-                return []
+            logger.info("[architect] no docs found in %s - cannot plan without documentation", docs_dir)
+            logger.info("[architect] supervisor should have initiated phase 0 collaboration")
+            return []
 
         logger.info("[architect] reading %d doc files", len(doc_files))
         spec_file = ai_dir / "spec.md"
@@ -404,103 +210,45 @@ Review and adjust these in your docs/ directory if needed.
             it["phase"] = phase
         return iterations
 
+    def request_clarification(self, question: str, context: dict = None, suggestions: list = None) -> str:
+        """
+        Request clarification from user via comms system.
+        Used when architect needs more information about project requirements.
+        
+        Args:
+            question: The clarification question to ask
+            context: Additional context about what needs clarification
+            suggestions: Suggested answers for the user
+            
+        Returns:
+            User's response
+        """
+        try:
+            from comms.clarification_client import ClarificationClient
+            clarifier = ClarificationClient(
+                agent_id="architect", 
+                task_id=context.get("task_id", "clarification") if context else "clarification",
+                iteration_id=context.get("iteration_id", 0) if context else 0
+            )
+            
+            reply = clarifier.ask(
+                question=question,
+                suggestions=suggestions or [],
+                timeout=3600
+            )
+            
+            logger.info("[architect] received clarification: %s", reply[:100])
+            return reply
+            
+        except ImportError:
+            logger.warning("[architect] comms not available - cannot request clarification")
+            return ""
+        except Exception as e:
+            logger.error("[architect] clarification request failed: %s", e)
+            return ""
+
     def run(self, message: str, read_files: list = None, edit_files: list = None, timeout: int = 300) -> dict:
         """
-        Handle chat interactions, especially for phase 0 collaboration.
+        Standard Aider agent run - delegates to parent class.
         """
-        # Check if we're in phase 0 (empty docs scenario)
-        docs_dir = self.workspace.parent / "docs"  # workspace is typically .ai subdir
-        if not docs_dir.exists():
-            docs_dir = self.workspace / "docs"  # fallback
-        doc_files = list(docs_dir.glob("*.md")) if docs_dir.exists() else []
-
-        if not doc_files:
-            # Phase 0: No docs yet - provide collaboration guidance
-            if "create" in message.lower() or "draft" in message.lower() or "help" in message.lower():
-                # User is asking for help creating docs - provide actual assistance
-                # Extract what they're asking to create
-                doc_type = "document"
-                if "blueprint" in message.lower():
-                    doc_type = "blueprint.md"
-                elif "requirements" in message.lower():
-                    doc_type = "requirements.md"
-                elif "architecture" in message.lower():
-                    doc_type = "architecture.md"
-                elif "api" in message.lower():
-                    doc_type = "api-design.md"
-                elif "domain" in message.lower():
-                    doc_type = "domain-model.md"
-                
-                phase_0_help_message = f"""
-I'll help you create that documentation! Let me provide guidance and a template for `{doc_type}`.
-
-**Your request:** {message}
-
-Since we're in phase 0 with empty docs, I can help you create initial documentation. Here's how we can proceed:
-
-## Template for {doc_type}
-
-I can provide you with a structured template and guidance. Would you like me to:
-
-1. **Give you a complete template** you can copy into `docs/{doc_type}`
-2. **Walk through the sections** one by one with explanations
-3. **Ask questions** to understand your project better first
-
-For example, if you tell me about your task management application, I can create a tailored blueprint that includes:
-- Project vision and goals
-- Core features and user stories  
-- Technical architecture decisions
-- Success criteria and metrics
-
-What would you like me to focus on first? Or shall I provide a general template you can customize?
-"""
-                return {
-                    "success": True,
-                    "stdout": phase_0_help_message,
-                    "stderr": "",
-                    "exit_code": 0
-                }
-            else:
-                # General phase 0 guidance
-                phase_0_message = f"""
-I see we're in the initial phase 0 bootstrap with empty docs/. As the architect, I can help you plan and specify your project.
-
-**Current State:**
-- Project initialized but no documentation exists yet
-- All agents are loaded and ready for collaboration
-- RAG system initialized for future document indexing
-
-**Next Steps for Collaboration:**
-
-1. **Project Vision & Requirements**
-   - Create `docs/blueprint.md`: High-level project vision, goals, and success criteria
-   - Create `docs/requirements.md`: Functional and non-functional requirements
-   - Create `docs/constraints.md`: Technical constraints, architecture decisions
-
-2. **Technical Specification**
-   - Create `docs/architecture.md`: System architecture, components, data flow
-   - Create `docs/api-design.md`: API contracts, endpoints, data models
-   - Create `docs/domain-model.md`: Core business entities and relationships
-
-3. **Implementation Planning**
-   - Once docs are ready, I'll create a phased iteration plan
-   - Each phase builds incrementally: core logic → APIs → infrastructure
-
-**How to proceed:**
-- Tell me about your project idea and I'll help create the initial documentation
-- Or create the docs yourself and run `python agentcraft build` to start the full process
-- Use `python agentcraft comms` for multi-agent collaboration UI
-
-What would you like to work on first? I can help draft any of these documents or answer questions about the development approach.
-
-**Your message:** {message}
-"""
-                return {
-                    "success": True,
-                    "stdout": phase_0_message,
-                    "stderr": "",
-                    "exit_code": 0
-                }
-
-        # Normal operation with docs present - use standard Aider flow
         return super().run(message, read_files, edit_files, timeout, log_callback=self.log_callback)

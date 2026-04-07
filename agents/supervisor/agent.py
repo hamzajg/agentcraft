@@ -225,11 +225,11 @@ class SupervisorAgent(AiderAgent):
         else:  # greenfield
             strategy = {
                 "strategy": "greenfield_clarify",
-                "action": "Request project clarification from user via collaborative dialogue",
-                "agents_involved": ["architect"],
+                "action": "Supervisor defines phase 0 plan and collaborates with architect for clarification",
+                "agents_involved": ["supervisor", "architect"],
                 "next_steps": [
-                    "Ask user for project vision via comms UI",
-                    "Architect guides through specification process",
+                    "Supervisor creates phase 0 clarification plan",
+                    "Architect asks user for project vision via comms UI",
                     "Generate blueprint.md from user input",
                     "Generate requirements.md with features",
                     "Generate architecture.md with design approach",
@@ -259,6 +259,105 @@ class SupervisorAgent(AiderAgent):
                 ]
                 
             return strategy
+
+    def execute_phase_0_plan(self, architect_agent, workspace: dict) -> bool:
+        """
+        Execute Phase 0 plan: define clarification questions and let architect ask user.
+        
+        Args:
+            architect_agent: ArchitectAgent instance to use for clarification
+            workspace: Workspace configuration dict
+            
+        Returns:
+            True if docs were generated, False otherwise
+        """
+        import yaml
+        from pathlib import Path
+        
+        architecture = workspace.get("project", {}).get("architecture", "monolith")
+        docs_dir = Path(workspace.get("docs_dir", "docs"))
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info("[supervisor] executing phase 0 plan for %s architecture", architecture)
+        
+        # Define clarification questions based on architecture
+        clarification_plan = {
+            "primary_question": """
+I'm the Architect agent working with the Supervisor to plan your project. The Supervisor has asked me to gather some information about what you'd like to build.
+
+To create a proper development plan, I need to understand your project vision. Please tell me:
+
+1. **What is your project about?** (e.g., "a task management web app", "an AI chatbot platform", "a data analytics dashboard")
+
+2. **What are the main features/goals?** (e.g., "users can create and assign tasks", "integrate with external APIs")
+
+3. **Any technical preferences?** (e.g., "React frontend", "Python backend", "microservices architecture")
+
+Your answers will help me create comprehensive documentation and a detailed development plan.
+""",
+            "suggestions": [
+                "I want to create a web application for task management",
+                "Help me plan a microservice-based platform",
+                "I need a simple monolithic application with REST APIs",
+                "I already have documentation ready - please check docs/ directory"
+            ]
+        }
+        
+        # Ask for clarification
+        logger.info("[supervisor] architect requesting clarification from user")
+        user_response = architect_agent.request_clarification(
+            question=clarification_plan["primary_question"],
+            context={"task_id": "phase-0-clarification", "iteration_id": 0},
+            suggestions=clarification_plan["suggestions"]
+        )
+        
+        if not user_response:
+            logger.warning("[supervisor] no user response received")
+            return False
+        
+        # Generate initial documentation from user response
+        logger.info("[supervisor] generating phase 0 documentation from user response")
+        
+        # Create blueprint.md
+        blueprint_path = docs_dir / "blueprint.md"
+        blueprint_content = f"""# Project Blueprint
+
+## User's Vision
+{user_response}
+
+## Project Structure
+Based on your description, here's the planned structure:
+
+### Development Phases
+1. **Phase 1: Core Models** - Define data models and domain entities
+2. **Phase 2: API Foundation** - Build base API endpoints and services  
+3. **Phase 3: Integration** - Add features and integrations
+4. **Phase 4: Polish** - Testing, documentation, deployment prep
+
+## Architecture Style
+{architecture.title()} architecture
+
+## Next Steps
+The agents will now analyze this vision and create detailed iteration plans.
+Review and adjust these in your docs/ directory if needed.
+"""
+        blueprint_path.write_text(blueprint_content)
+        logger.info("[supervisor] created %s", blueprint_path)
+        
+        # Share on bus
+        architect_agent.share_context("phase0.blueprint", {
+            "path": str(blueprint_path),
+            "vision": user_response,
+            "summary": "Initial project blueprint generated from user guidance.",
+        })
+        architect_agent.broadcast("docs_generated", {
+            "path": str(blueprint_path),
+            "reason": "phase0 planning",
+            "notes": "Supervisor defined plan, Architect gathered clarification.",
+        })
+        
+        logger.info("[supervisor] phase 0 documentation complete")
+        return True
 
     def decide_agent_assignment(self, iteration: dict, architecture: str) -> str:
         """
