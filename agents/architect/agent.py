@@ -247,6 +247,41 @@ class ArchitectAgent(AiderAgent):
             logger.error("[architect] clarification request failed: %s", e)
             return ""
 
+    def handle_query(self, question: str, context: dict) -> str:
+        """
+        Handle queries from other agents via AgentBus.
+        Specifically handles phase 0 clarification requests from supervisor.
+        """
+        logger.info("[architect] received query from agent bus: %s", question[:80])
+        
+        # Check if this is a phase 0 clarification request
+        if "phase 0" in question.lower() or "clarification" in question.lower():
+            # Extract the question to ask user
+            clarification_plan = context.get("clarification_plan", {})
+            user_question = clarification_plan.get("primary_question", question)
+            suggestions = clarification_plan.get("suggestions", [])
+            
+            logger.info("[architect] handling phase 0 clarification request")
+            
+            # Ask user for clarification
+            user_response = self.request_clarification(
+                question=user_question,
+                context=context,
+                suggestions=suggestions
+            )
+            
+            if user_response:
+                # Broadcast that architect has gathered user input
+                self.broadcast("architect.clarification_received", {
+                    "response_length": len(user_response),
+                    "task_id": context.get("task_id", "unknown")
+                })
+            
+            return user_response
+        
+        # Default: use parent class handler (local LLM)
+        return super().handle_query(question, context)
+
     def run(self, message: str, read_files: list = None, edit_files: list = None, timeout: int = 300) -> dict:
         """
         Standard Aider agent run - delegates to parent class.

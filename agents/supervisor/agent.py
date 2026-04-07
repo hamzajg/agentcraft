@@ -263,6 +263,7 @@ class SupervisorAgent(AiderAgent):
     def execute_phase_0_plan(self, architect_agent, workspace: dict) -> bool:
         """
         Execute Phase 0 plan: define clarification questions and let architect ask user.
+        Uses AgentBus for inter-agent communication.
         
         Args:
             architect_agent: ArchitectAgent instance to use for clarification
@@ -271,7 +272,6 @@ class SupervisorAgent(AiderAgent):
         Returns:
             True if docs were generated, False otherwise
         """
-        import yaml
         from pathlib import Path
         
         architecture = workspace.get("project", {}).get("architecture", "monolith")
@@ -280,7 +280,7 @@ class SupervisorAgent(AiderAgent):
         
         logger.info("[supervisor] executing phase 0 plan for %s architecture", architecture)
         
-        # Define clarification questions based on architecture
+        # Define clarification plan
         clarification_plan = {
             "primary_question": """
 I'm the Architect agent working with the Supervisor to plan your project. The Supervisor has asked me to gather some information about what you'd like to build.
@@ -303,17 +303,58 @@ Your answers will help me create comprehensive documentation and a detailed deve
             ]
         }
         
-        # Ask for clarification
-        logger.info("[supervisor] architect requesting clarification from user")
-        user_response = architect_agent.request_clarification(
-            question=clarification_plan["primary_question"],
-            context={"task_id": "phase-0-clarification", "iteration_id": 0},
-            suggestions=clarification_plan["suggestions"]
+        # Share the clarification plan on the bus
+        self.share_context("supervisor.phase0_plan", {
+            "architecture": architecture,
+            "clarification_plan": clarification_plan,
+            "status": "initiated"
+        })
+        
+        # Broadcast phase 0 initiation
+        self.broadcast("phase0_started", {
+            "strategy": "greenfield_clarify",
+            "architecture": architecture,
+            "agents_involved": ["supervisor", "architect"]
+        })
+        
+        # Ask architect to gather user clarification via AgentBus
+        logger.info("[supervisor] asking architect to gather user clarification")
+        clarification_request = f"""
+Phase 0 Clarification Request from Supervisor
+==============================================
+
+Architecture: {architecture}
+
+Please ask the user the following question and return their response:
+
+{clarification_plan['primary_question']}
+
+Suggested answers to offer:
+{', '.join(clarification_plan['suggestions'])}
+
+Return the user's exact response.
+"""
+        
+        user_response = self.ask_agent(
+            target_role="architect",
+            question=clarification_request,
+            context={
+                "task_id": "phase-0-clarification",
+                "iteration_id": 0,
+                "clarification_plan": clarification_plan
+            }
         )
         
         if not user_response:
-            logger.warning("[supervisor] no user response received")
+            logger.warning("[supervisor] no user response received via architect")
+            self.share_context("supervisor.phase0_plan", {
+                "architecture": architecture,
+                "status": "failed",
+                "reason": "no user response"
+            })
             return False
+        
+        logger.info("[supervisor] received user response via architect: %s", user_response[:100])
         
         # Generate initial documentation from user response
         logger.info("[supervisor] generating phase 0 documentation from user response")
@@ -345,15 +386,24 @@ Review and adjust these in your docs/ directory if needed.
         logger.info("[supervisor] created %s", blueprint_path)
         
         # Share on bus
-        architect_agent.share_context("phase0.blueprint", {
+        self.share_context("supervisor.phase0_blueprint", {
             "path": str(blueprint_path),
             "vision": user_response,
+            "architecture": architecture,
             "summary": "Initial project blueprint generated from user guidance.",
         })
-        architect_agent.broadcast("docs_generated", {
-            "path": str(blueprint_path),
-            "reason": "phase0 planning",
-            "notes": "Supervisor defined plan, Architect gathered clarification.",
+        
+        self.share_context("supervisor.phase0_plan", {
+            "architecture": architecture,
+            "status": "completed",
+            "blueprint_path": str(blueprint_path)
+        })
+        
+        # Broadcast completion
+        self.broadcast("phase0_completed", {
+            "docs_generated": [str(blueprint_path)],
+            "architecture": architecture,
+            "next_step": "architect_planning"
         })
         
         logger.info("[supervisor] phase 0 documentation complete")
