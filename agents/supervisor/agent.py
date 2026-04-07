@@ -517,6 +517,7 @@ Guidelines:
         
         self._log(f"Executing phase 0 plan for {architecture} architecture")
         logger.info("[supervisor] executing phase 0 plan for %s architecture", architecture)
+        self.info(f"Executing phase 0 plan for {architecture} architecture")
         
         # Define clarification plan
         clarification_plan = {
@@ -654,6 +655,7 @@ Review and adjust these in your docs/ directory if needed.
         
         self._log("Phase 0 documentation complete")
         logger.info("[supervisor] phase 0 documentation complete")
+        self.complete("Phase 0 documentation complete", file=str(blueprint_path))
         return True
 
     def decide_agent_assignment(self, iteration: dict, architecture: str) -> str:

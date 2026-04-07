@@ -153,11 +153,11 @@ async def clarify(req: ClarificationRequest):
         question=req.question,
         partial_output=req.partial_output,
         suggestions=req.suggestions,
-        status=MessageStatus.PENDING,
+        status=req.status,
         created_at=datetime.utcnow(),
     )
-    # Generate LLM suggestions if agent didn't provide any
-    if not msg.suggestions:
+    # Generate LLM suggestions if agent didn't provide any and status is PENDING
+    if msg.status == MessageStatus.PENDING and not msg.suggestions:
         try:
             generated = await generate_suggestions(
                 req.agent_id, label, req.question, req.file, req.partial_output
@@ -169,8 +169,9 @@ async def clarify(req: ClarificationRequest):
 
     store.save(msg)
 
-    # Create the Future the agent will block on
-    pending_store.create_future(msg.id)
+    # Create the Future the agent will block on only if status is PENDING
+    if msg.status == MessageStatus.PENDING:
+        pending_store.create_future(msg.id)
 
     # Push to all open UI tabs immediately
     await manager.broadcast(WsEvent(
@@ -178,16 +179,17 @@ async def clarify(req: ClarificationRequest):
         payload=msg.model_dump(mode="json"),
     ))
 
-    # Fire external notifications (Slack/Teams if configured)
-    await notify_clarification(
-        agent_label=label,
-        question=req.question,
-        file=req.file,
-        message_id=msg.id,
-    )
+    # Fire external notifications (Slack/Teams if configured) for PENDING
+    if msg.status == MessageStatus.PENDING:
+        await notify_clarification(
+            agent_label=label,
+            question=req.question,
+            file=req.file,
+            message_id=msg.id,
+        )
 
-    logger.info("[comms] clarification from %s: %s", req.agent_id, req.question[:80])
-    return {"message_id": msg.id, "status": "pending"}
+    logger.info("[comms] %s from %s: %s", msg.status, req.agent_id, req.question[:80])
+    return {"message_id": msg.id, "status": msg.status.value}
 
 
 @app.post("/api/reply")

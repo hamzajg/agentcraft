@@ -186,6 +186,18 @@ class AiderAgent:
         if self._clarifier:
             self._clarifier.report_status(status, file)
 
+    def info(self, message: str, file: str = None):
+        """Post an informational update to the chat (non-blocking)."""
+        if self._clarifier:
+            self._clarifier.info(message, file)
+        logger.info("[%s] INFO: %s", self.role, message)
+
+    def complete(self, message: str, file: str = None):
+        """Post a completion message to the chat (non-blocking)."""
+        if self._clarifier:
+            self._clarifier.complete(message, file)
+        logger.info("[%s] COMPLETE: %s", self.role, message)
+
     # ── Agent ↔ Agent communication ───────────────────────────────────────────
 
     def ask_agent(
@@ -358,6 +370,9 @@ class AiderAgent:
         # Order: skills → RAG → explicit read_files
         all_reads = skill_files + rag_files + read_files
 
+        # Post update before running
+        self.info(f"Starting task: {message[:100]}...", file=str(edit_files[0]) if edit_files else None)
+
         # Build message with aider commands for better context management
         full_message = self._build_aider_commands(message, all_reads, edit_files, aider_commands)
 
@@ -438,6 +453,10 @@ class AiderAgent:
                     # Auto-ingest any files we edited
                     for ef in edit_files:
                         self.ingest(Path(ef))
+                    
+                    # Post completion message
+                    self.complete(f"Successfully completed task: {message[:100]}", 
+                                  file=str(edit_files[0]) if edit_files else None)
                     return out
                 logger.warning("[%s] attempt %d failed (exit %d)",
                                self.role, attempt, proc.returncode)

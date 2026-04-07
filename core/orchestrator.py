@@ -107,6 +107,10 @@ class Orchestrator:
         self.log_client = httpx.Client()
         self.log_callback = lambda agent_id, msg: self._send_log(agent_id, msg)
 
+        # High-level updates via comms client
+        from comms.clarification_client import ClarificationClient
+        self._comms = ClarificationClient(agent_id="orchestrator", task_id="bootstrap")
+
         self.workspace.mkdir(parents=True, exist_ok=True)
         (self.workspace / ".ai").mkdir(exist_ok=True)
 
@@ -241,6 +245,9 @@ class Orchestrator:
             phase_0_decision = self.supervisor.decide_phase_0(project_type, {"workspace": str(self.workspace), "project": {"architecture": architecture}})
             logger.info("[orchestrator] phase 0 strategy: %s", phase_0_decision["strategy"])
             
+            if self.start_from == 1:
+                self._banner("PHASE 0 — COLLABORATION")
+                self._comms.info("Starting Phase 0: Documentation & Collaboration")
             try:
                 if phase_0_decision["strategy"] == "legacy_scan":
                     # Legacy project: scan existing source and generate reference docs
@@ -323,8 +330,10 @@ class Orchestrator:
                 return self.run_log
 
         # ── Phase: Spec ───────────────────────────────────────────────────────
+        self._comms.info("Starting Phase: Specification (generating spec.md and use_cases.md)")
         spec_files = self._run_spec_phase()
         self.run_log.spec_produced = bool(spec_files)
+        self._comms.complete(f"Specification complete: {len(spec_files)} files generated")
 
         # Index spec output immediately
         if self._rag and self._rag.enabled:
@@ -357,13 +366,16 @@ class Orchestrator:
                     extra.extend(cd.rglob("*.md"))
                 spec_files = list(set(spec_files + extra))
         combined = self._combined_docs_dir(spec_files)
+        self._comms.info(f"Starting Phase: Architecture Planning (for {self.architecture} architecture)")
         iterations = self.architect.plan(combined)
         if not iterations:
             logger.error("[orchestrator] architect produced no iterations — aborting")
+            self._comms.info("Architecture planning failed — no iterations produced")
             return self.run_log
 
         logger.info("[orchestrator] %d iterations, %d phases",
                     len(iterations), len({i.get("phase", 1) for i in iterations}))
+        self._comms.complete(f"Architecture planning complete: {len(iterations)} iterations across {len({i.get('phase', 1) for i in iterations})} phases")
         self._save_log()
 
         # ── Phase: Iteration execution ────────────────────────────────────────
@@ -394,13 +406,17 @@ class Orchestrator:
             if iteration["id"] < self.start_from:
                 continue
             phase       = iteration.get("phase", 1)
+            self._comms.info(f"Starting Iteration {iteration['id']} (Phase {phase}): {iteration['name']}")
             iter_result = self._run_iteration(iteration)
             self.run_log.iterations.append(iter_result)
             self._save_log()
 
             if not iter_result.approved:
                 logger.error("[orchestrator] iter %d failed — stopping", iteration["id"])
+                self._comms.info(f"Iteration {iteration['id']} failed.")
                 break
+            
+            self._comms.complete(f"Iteration {iteration['id']} complete and approved.")
 
             remaining = [i for i in iterations
                          if i.get("phase", 1) == phase and i["id"] > iteration["id"]]
@@ -418,6 +434,7 @@ class Orchestrator:
         self.run_log.total_duration_s = round(time.time() - total_start, 1)
         self._save_log()
         self._banner(f"COMPLETE — {self.run_log.total_duration_s:.0f}s")
+        self._comms.complete(f"Bootstrap complete in {self.run_log.total_duration_s:.0f}s. {len(self.run_log.iterations)} iterations processed.")
         return self.run_log
 
     # ── Bus wiring ───────────────────────────────────────────────────────────

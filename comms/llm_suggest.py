@@ -27,9 +27,9 @@ def _get_llm():
     if _llm is not None:
         return _llm
     try:
-        # Import from ai-team/llm/
-        ai_team = os.path.join(os.path.dirname(__file__), "..", "ai-team")
-        sys.path.insert(0, ai_team)
+        # Import from agents/llm/
+        agents = os.path.join(os.path.dirname(__file__), "..", "agents")
+        sys.path.insert(0, agents)
         from llm import OllamaClient
         client = OllamaClient(model=OLLAMA_MODEL, temperature=0.3, timeout=30)
         if client.is_available():

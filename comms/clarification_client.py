@@ -132,3 +132,33 @@ class ClarificationClient:
                 })
         except Exception:
             pass  # Status updates are best-effort
+
+    def info(self, message: str, file: Optional[str] = None):
+        """Post an informational update to the agent's chat channel (non-blocking)."""
+        try:
+            with httpx.Client(timeout=3) as client:
+                client.post(f"{COMMS_URL}/api/clarify", json={
+                    "agent_id":     self.agent_id,
+                    "task_id":      self.task_id,
+                    "iteration_id": self.iteration_id,
+                    "file":         file,
+                    "question":     message,
+                    "status":       "info",
+                })
+        except Exception:
+            pass
+
+    def complete(self, message: str, file: Optional[str] = None):
+        """Post a final completion message to the agent's chat channel (non-blocking)."""
+        try:
+            with httpx.Client(timeout=3) as client:
+                client.post(f"{COMMS_URL}/api/clarify", json={
+                    "agent_id":     self.agent_id,
+                    "task_id":      self.task_id,
+                    "iteration_id": self.iteration_id,
+                    "file":         file,
+                    "question":     message,
+                    "status":       "completed",
+                })
+        except Exception:
+            pass

@@ -202,6 +202,9 @@ class ArchitectAgent(AiderAgent):
         iterations_file.write_text(json.dumps(all_iterations, indent=2))
         logger.info("[architect] total: %d iterations across 3 phases", len(all_iterations))
 
+        # Post completion update
+        self.complete(f"Planning complete: {len(all_iterations)} iterations across 3 phases", file=str(iterations_file))
+
         # Share on bus for other agents
         self.share_context("iteration_plan", all_iterations)
         return all_iterations

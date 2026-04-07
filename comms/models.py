@@ -22,9 +22,11 @@ import uuid
 
 
 class MessageStatus(str, Enum):
-    PENDING  = "pending"   # agent waiting for human reply
-    REPLIED  = "replied"   # human has replied, agent resumed
-    EXPIRED  = "expired"   # timeout — agent used best-guess fallback
+    PENDING   = "pending"   # agent waiting for human reply
+    REPLIED   = "replied"   # human has replied, agent resumed
+    EXPIRED   = "expired"   # timeout — agent used best-guess fallback
+    INFO      = "info"      # informational message (no reply needed)
+    COMPLETED = "completed" # final result message
 
 
 class AgentChannel(BaseModel):
@@ -36,14 +38,15 @@ class AgentChannel(BaseModel):
 
 
 class ClarificationRequest(BaseModel):
-    """Agent → comms server: I need human input."""
+    """Agent → comms server: I need human input or want to post an update."""
     agent_id:       str = Field(..., description="e.g. 'backend_dev'")
     task_id:        str = Field(..., description="correlation ID from orchestrator")
     iteration_id:   Optional[int]   = None
     file:           Optional[str]   = None   # file being worked on
-    question:       str = Field(..., description="the blocker / question")
+    question:       str = Field(..., description="the blocker / question / message")
     partial_output: Optional[str]   = None   # what the agent has produced so far
     suggestions:    list[str]       = Field(default_factory=list)  # agent's own guesses
+    status:         MessageStatus   = MessageStatus.PENDING
 
 
 class ClarificationMessage(BaseModel):

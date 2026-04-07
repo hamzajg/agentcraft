@@ -140,6 +140,7 @@ class PlannerAgent(AiderAgent):
 
         tasks_file.write_text(json.dumps(all_tasks, indent=2))
         logger.info("[planner] iter %d → %d tasks", iteration["id"], len(all_tasks))
+        self.complete(f"Decomposed iteration {iteration['id']} into {len(all_tasks)} tasks", file=str(tasks_file))
         return all_tasks
 
     def _plan_one_file(
