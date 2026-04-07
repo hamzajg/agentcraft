@@ -107,6 +107,7 @@ class ArchitectAgent(AiderAgent):
         return "monolith"
 
     def plan(self, docs_dir: Path) -> list[dict]:
+        self.report_status("running")
         # Load architecture from workspace config
         architecture = self._load_architecture()
         logger.info("[architect] planning for %s architecture", architecture)
@@ -201,12 +202,14 @@ class ArchitectAgent(AiderAgent):
 
         iterations_file.write_text(json.dumps(all_iterations, indent=2))
         logger.info("[architect] total: %d iterations across 3 phases", len(all_iterations))
+        self.emit_file_written(iterations_file)
 
         # Post completion update
         self.complete(f"Planning complete: {len(all_iterations)} iterations across 3 phases", file=str(iterations_file))
 
         # Share on bus for other agents
         self.share_context("iteration_plan", all_iterations)
+        self.report_status("idle")
         return all_iterations
 
     def read_json(self, path: Path, default):

@@ -39,6 +39,7 @@ import logging
 import threading
 import time
 import uuid
+import httpx
 from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,12 @@ class _EventStream:
         self._ring: collections.deque = collections.deque(maxlen=RING_SIZE)
         self._subscribers: list[Callable] = []   # async callbacks
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._remote_url: str | None = None
+
+    def set_remote(self, url: str) -> None:
+        """Configure ES to forward all emitted events to a remote server."""
+        self._remote_url = url.rstrip("/")
+        logger.info("[ES] remote forwarding enabled: %s", self._remote_url)
 
     # ── Emit ──────────────────────────────────────────────────────────────────
 
@@ -68,10 +75,30 @@ class _EventStream:
         with self._mu:
             self._ring.append(event)
             subs = list(self._subscribers)
+            remote_url = self._remote_url
 
         logger.debug("[ES] %s %s", event_type, str(payload or {})[:80])
 
-        # Push to async subscribers from the orchestrator thread
+        # Push to async subscribers (server process)
+        if subs and self._loop and self._loop.is_running():
+            for cb in subs:
+                asyncio.run_coroutine_threadsafe(cb(event), self._loop)
+        
+        # Forward to remote (orchestrator process)
+        if remote_url:
+            def _forward():
+                try:
+                    httpx.post(f"{remote_url}/api/live/emit", json=event, timeout=2)
+                except Exception as e:
+                    logger.debug("[ES] remote forward failed: %s", e)
+            threading.Thread(target=_forward, daemon=True).start()
+
+    def inject(self, event: dict) -> None:
+        """Inject an externally-generated event into the ring buffer and subscribers."""
+        with self._mu:
+            self._ring.append(event)
+            subs = list(self._subscribers)
+        
         if subs and self._loop and self._loop.is_running():
             for cb in subs:
                 asyncio.run_coroutine_threadsafe(cb(event), self._loop)
@@ -107,6 +134,12 @@ class _EventStream:
     def clear(self) -> None:
         with self._mu:
             self._ring.clear()
+        
+        if self._remote_url:
+            try:
+                httpx.post(f"{self._remote_url}/api/live/reset", timeout=2)
+            except Exception as e:
+                logger.debug("[ES] remote reset failed: %s", e)
 
 
 # Module-level singleton

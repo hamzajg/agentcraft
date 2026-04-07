@@ -746,6 +746,67 @@ async def live_events(limit: int = 200, since: float = 0):
     return es.recent(limit)
 
 
+@app.post("/api/log")
+async def post_log(req: LogMessage):
+    """Agent posts a log message to the console."""
+    await manager.broadcast(WsEvent(event="log", payload=req.model_dump()))
+    return {"ok": True}
+
+
+@app.post("/api/live/emit")
+async def live_emit(event: dict):
+    """Receive an event from an external process (e.g. orchestrator) and broadcast it."""
+    from core.event_stream import ES
+    # We use inject to preserve the original ID and TS
+    ES.inject(event)
+    return {"ok": True}
+
+
+@app.post("/api/live/reset")
+async def live_reset():
+    from core.event_stream import ES
+    ES.clear()
+    return {"ok": True}
+
+
+@app.post("/api/control/reset")
+async def control_reset():
+    cc = _get_cc()
+    if cc:
+        cc.reset()
+    return {"ok": True}
+
+
+@app.get("/api/control/state")
+async def control_state():
+    """External processes poll this to sync their local CC state."""
+    cc = _get_cc()
+    if not cc:
+        return {"error": "no build running"}
+
+    with cc._mu:
+        # We only want to return "new" directives or all of them?
+        # Pop them from the server's queue to send to client
+        directives = []
+        while not cc._directives.empty():
+            directives.append(cc._directives.get())
+
+        gates = {}
+        for gid, gate in cc._approval_gates.items():
+            gates[gid] = {
+                "approved": gate.approved,
+                "reason":   gate.reject_reason,
+            }
+
+    return {
+        "stopped":    cc._stopped.is_set(),
+        "pause_task": cc._pause_after_task.is_set(),
+        "pause_iter": cc._pause_after_iter.is_set(),
+        "directives": directives,
+        "gates":      gates,
+    }
+
+
 @app.get("/api/live/state")
 async def live_state():
     """Current build state: control flags, approval gates, whether streaming is active."""

@@ -113,6 +113,15 @@ class Orchestrator:
         from comms.clarification_client import ClarificationClient
         self._comms = ClarificationClient(agent_id="orchestrator", task_id="bootstrap")
 
+        # Configure EventStream and ControlChannel for remote mode if URL is present
+        import os
+        comms_url = os.environ.get("COMMS_SERVER_URL", "http://localhost:7000")
+        if comms_url:
+            from core.event_stream import ES
+            from core.control import CC
+            ES.set_remote(comms_url)
+            CC.set_remote(comms_url)
+
         self.workspace.mkdir(parents=True, exist_ok=True)
         (self.workspace / ".ai").mkdir(exist_ok=True)
 
@@ -149,10 +158,13 @@ class Orchestrator:
 
     def _send_log(self, agent_id: str, message: str):
         """Send log to comms server in background thread (non-blocking)."""
+        import os
+        comms_url = os.environ.get("COMMS_SERVER_URL", "http://localhost:7000")
+        
         def _post():
             try:
                 self.log_client.post(
-                    "http://localhost:7000/api/log",
+                    f"{comms_url}/api/log",
                     json={"agent_id": agent_id, "message": message},
                     timeout=2
                 )
@@ -255,7 +267,9 @@ class Orchestrator:
             if self.start_from == 1:
                 self._banner("PHASE 0 — COLLABORATION")
                 self._comms.info("Starting Phase 0: Documentation & Collaboration")
+                ES.emit("phase_started", {"phase": 0})
             try:
+                phase0_start = time.time()
                 if phase_0_decision["strategy"] == "legacy_scan":
                     # Legacy project: scan existing source and generate reference docs
                     logger.info("[orchestrator] PHASE 0: legacy scanning and reference docs")
@@ -316,6 +330,7 @@ class Orchestrator:
                 # Check if docs were generated
                 if any(self.docs_dir.glob("*.md")):
                     logger.info("[orchestrator] phase 0 docs ready - continuing to phase 1")
+                    ES.emit("phase_done", {"phase": 0, "duration_s": round(time.time() - phase0_start, 1)})
                 else:
                     logger.warning("[orchestrator] phase 0 incomplete - no docs generated")
                     if self._rag:
@@ -413,6 +428,12 @@ class Orchestrator:
             if iteration["id"] < self.start_from:
                 continue
             phase       = iteration.get("phase", 1)
+            
+            # Emit phase_started if it's the first iteration of this phase
+            if not any(ir.phase == phase for ir in self.run_log.iterations):
+                ES.emit("phase_started", {"phase": phase})
+
+            self._comms.info(f"Starting Iteration {iteration['id']} (Phase {phase}): {iteration['name']}")
             try:
                 CC.check_stop()
             except BuildStopped:
@@ -424,6 +445,7 @@ class Orchestrator:
 
             if not iter_result.approved:
                 logger.error("[orchestrator] iter %d failed — stopping", iteration["id"])
+                self._comms.info(f"Iteration {iteration['id']} failed.")
                 break
             # Approval gate and pause check
             try:
@@ -444,6 +466,7 @@ class Orchestrator:
                 completed_phases.add(phase)
                 logger.info("\n  [PHASE %d COMPLETE] Running CI/CD infrastructure...", phase)
                 self._run_cicd_phase(phase)
+                ES.emit("phase_done", {"phase": phase, "duration_s": iter_result.duration_s})
                 self._save_log()
 
         # ── Cleanup ───────────────────────────────────────────────────────────
@@ -522,12 +545,16 @@ class Orchestrator:
             ai_dir = self.workspace / ".ai"
             return [p for p in [ai_dir/"spec.md", ai_dir/"use_cases.md"] if p.exists()]
 
+        start = time.time()
+        ES.emit("phase_started", {"phase": 0})
         logger.info("[orchestrator] PHASE 0: spec...")
+        self._comms.info("Starting Phase: Specification (generating spec.md and use_cases.md)")
         spec_file, uc_file = self.spec_agent.specify(self.docs_dir)
         
         # Check if spec generation succeeded
         if spec_file is None or uc_file is None:
             logger.error("[orchestrator] PHASE 0 spec generation failed - files not created")
+            ES.emit("error", {"agent": "spec", "message": "Spec generation failed"})
             raise RuntimeError("Spec agent failed to generate documentation files")
         
         if spec_file.exists():
@@ -539,7 +566,11 @@ class Orchestrator:
                 timeout=180,
                 log_callback=self.log_callback,
             )
-        return [f for f in [spec_file, uc_file] if f.exists()]
+        
+        results = [f for f in [spec_file, uc_file] if f.exists()]
+        ES.emit("phase_done", {"phase": 0, "duration_s": round(time.time() - start, 1)})
+        self._comms.complete(f"Specification complete: {len(results)} files generated")
+        return results
 
     # ── Iteration ─────────────────────────────────────────────────────────────
 
@@ -579,6 +610,12 @@ class Orchestrator:
                 with ThreadPoolExecutor(max_workers=min(len(tasks), 4)) as executor:
                     future_to_task = {executor.submit(self._run_task, task, iteration["id"]): task for task in tasks}
                     for future in as_completed(future_to_task):
+                        try:
+                            CC.check_stop()
+                        except BuildStopped:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            ES.emit("stopped", {})
+                            return result
                         tr = future.result()
                         result.task_results.append(tr)
                         self._log_task_result(tr)
@@ -704,8 +741,9 @@ class Orchestrator:
         status = "✓" if result.approved else "✗"
         duration = f"{result.duration_s:.1f}s"
         attempts = f"({result.attempts} attempt{'s' if result.attempts > 1 else ''})"
-        logger.info("  %s [%s] %s — %s %s", 
-                   status, result.agent.upper(), result.final_verdict, duration, attempts)
+        msg = f"  {status} [{result.agent.upper()}] {result.final_verdict} — {duration} {attempts}"
+        logger.info(msg)
+        self._send_log("orchestrator", msg)
 
     # ── CI/CD ─────────────────────────────────────────────────────────────────
 
@@ -746,6 +784,10 @@ class Orchestrator:
             json.dumps(asdict(self.run_log), indent=2))
 
     def _banner(self, msg):
-        logger.info("=" * 60)
+        sep = "=" * 60
+        logger.info(sep)
         logger.info(msg)
-        logger.info("=" * 60)
+        logger.info(sep)
+        self._send_log("orchestrator", sep)
+        self._send_log("orchestrator", msg)
+        self._send_log("orchestrator", sep)

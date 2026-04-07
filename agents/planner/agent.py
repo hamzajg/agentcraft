@@ -47,6 +47,7 @@ class PlannerAgent(AiderAgent):
 
     def decompose(self, iteration: dict, docs_dir: Path,
                   prior_tasks_files: list[Path]) -> list[dict]:
+        self.report_status("running")
         ai_dir = self.workspace / ".ai"
         ai_dir.mkdir(exist_ok=True)
         tasks_file = ai_dir / f"tasks_iter_{iteration['id']}.json"
@@ -140,7 +141,9 @@ class PlannerAgent(AiderAgent):
 
         tasks_file.write_text(json.dumps(all_tasks, indent=2))
         logger.info("[planner] iter %d → %d tasks", iteration["id"], len(all_tasks))
+        self.emit_file_written(tasks_file)
         self.complete(f"Decomposed iteration {iteration['id']} into {len(all_tasks)} tasks", file=str(tasks_file))
+        self.report_status("idle")
         return all_tasks
 
     def _plan_one_file(

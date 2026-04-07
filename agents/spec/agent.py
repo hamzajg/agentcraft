@@ -40,9 +40,13 @@ class SpecAgent(AiderAgent):
         self._is_openspec = (framework_id == "openspec")
 
     def specify(self, docs_dir: Path) -> tuple[Path, Path]:
+        self.report_status("running")
         if self._is_openspec:
-            return self._specify_openspec(docs_dir)
-        return self._specify_default(docs_dir)
+            result = self._specify_openspec(docs_dir)
+        else:
+            result = self._specify_default(docs_dir)
+        self.report_status("idle")
+        return result
 
     def _specify_default(self, docs_dir: Path) -> tuple[Path, Path]:
         ai_dir = self._ai_dir()
@@ -58,6 +62,8 @@ class SpecAgent(AiderAgent):
         if spec_file.exists() and spec_file.stat().st_size > 0:
             if use_cases_file.exists() and use_cases_file.stat().st_size > 0:
                 logger.info("[spec] spec.md and use_cases.md already exist — skipping generation (resume mode)")
+                self.emit_file_written(spec_file)
+                self.emit_file_written(use_cases_file)
                 return spec_file, use_cases_file
 
         logger.info("[spec] step 1/3 — extract entities (%d docs)", len(doc_files))
@@ -179,6 +185,8 @@ class SpecAgent(AiderAgent):
         if proposal_file.exists() and proposal_file.stat().st_size > 0:
             if delta_spec_file.exists() and delta_spec_file.stat().st_size > 0:
                 logger.info("[spec] OpenSpec proposal and spec already exist — skipping (resume mode)")
+                self.emit_file_written(proposal_file)
+                self.emit_file_written(delta_spec_file)
                 return proposal_file, delta_spec_file
 
         # Step 1: proposal (why + what)
@@ -221,7 +229,9 @@ class SpecAgent(AiderAgent):
 
         # Copy to source-of-truth
         if delta_spec_file.exists():
-            specs_dir.joinpath("spec.md").write_text(delta_spec_file.read_text())
+            sot_spec = specs_dir.joinpath("spec.md")
+            sot_spec.write_text(delta_spec_file.read_text())
+            self.emit_file_written(sot_spec)
 
         # Stubs for architect/planner
         if not design_file.exists():
@@ -230,17 +240,21 @@ class SpecAgent(AiderAgent):
                 "_Architect fills this._\n\n"
                 "## Approach\n\n## Key Decisions\n\n## Component Changes\n"
             )
+            self.emit_file_written(design_file)
         if not tasks_file.exists():
             tasks_file.write_text(
                 f"# Tasks: {change_name}\n\n"
                 "_Planner fills this._\n\n"
                 "- [ ] 1.1 \n- [ ] 1.2 \n"
             )
+            self.emit_file_written(tasks_file)
 
-        (openspec_root / "AGENTS.md").write_text(
+        agents_md = openspec_root / "AGENTS.md"
+        agents_md.write_text(
             "# OpenSpec\n\nopen openspec/changes/ to find the active change.\n"
             "Read proposal.md → specs/ → design.md → tasks.md before coding.\n"
         )
+        self.emit_file_written(agents_md)
 
         logger.info("[spec] openspec done")
         return proposal_file, delta_spec_file

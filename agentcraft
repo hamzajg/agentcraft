@@ -378,6 +378,9 @@ def cmd_bootstrap(args):
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     
+    # Export COMMS_SERVER_URL for Orchestrator and agents
+    os.environ["COMMS_SERVER_URL"] = f"http://localhost:{comms_port}"
+
     (ROOT / ".ai").mkdir(exist_ok=True)
 
     from core.orchestrator import Orchestrator
@@ -473,6 +476,7 @@ def cmd_comms(args):
         subprocess.run(["bash", str(comms_dir / "build.sh")], check=True)
 
     print(f"  Starting comms server on http://localhost:{port}")
+    os.environ["COMMS_SERVER_URL"] = f"http://localhost:{port}"
     subprocess.run(
         ["uvicorn", "comms.main:app", f"--port={port}",
          "--reload" if args.dev else "--workers=1"],

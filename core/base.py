@@ -194,17 +194,43 @@ class AiderAgent:
     def report_status(self, status: str, file: str = None):
         if self._clarifier:
             self._clarifier.report_status(status, file)
+        
+        # Also emit to EventStream for live view sidebar
+        es = _es()
+        if es:
+            es.emit("agent_status", {
+                "agent_id": self.role,
+                "status":   status,
+                "task_id":  self.task_id,
+                "file":     file,
+            })
+
+    def emit_file_written(self, path: Path):
+        """Manually emit a file_written event (e.g. for JSON artifacts)."""
+        es = _es()
+        if es and path.exists():
+            es.emit("file_written", {
+                "path":       str(path),
+                "agent":      self.role,
+                "size_bytes": path.stat().st_size,
+            })
 
     def info(self, message: str, file: str = None):
         """Post an informational update to the chat (non-blocking)."""
         if self._clarifier:
             self._clarifier.info(message, file)
+        if self.log_callback:
+            try: self.log_callback(self.role, f"INFO: {message}")
+            except: pass
         logger.info("[%s] INFO: %s", self.role, message)
 
     def complete(self, message: str, file: str = None):
         """Post a completion message to the chat (non-blocking)."""
         if self._clarifier:
             self._clarifier.complete(message, file)
+        if self.log_callback:
+            try: self.log_callback(self.role, f"COMPLETE: {message}")
+            except: pass
         logger.info("[%s] COMPLETE: %s", self.role, message)
 
     # ── Agent ↔ Agent communication ───────────────────────────────────────────
@@ -402,11 +428,26 @@ class AiderAgent:
         logger.info("[%s] run (skills=%s, rag=%d): %s",
                     self.role, self.skills, len(rag_files), message[:80])
 
-        call_id       = str(id(cmd))[:8]
+        # Use task_id if available, otherwise generate a run-specific one
+        if self.task_id and self.task_id != "unknown":
+            call_id = self.task_id
+        else:
+            call_id = f"run-{str(id(cmd))[:8]}"
+
         edit_file_str = str(edit_files[0]) if edit_files else ""
         es = _es()
 
+        if es and call_id.startswith("run-"):
+            es.emit("task_started", {
+                "id":           call_id,
+                "agent":        self.role,
+                "file":         edit_file_str,
+                "description":  message[:120],
+                "iteration_id": self.iteration_id,
+            })
+
         for attempt in range(1, self.max_retries + 1):
+            attempt_start = time.time()
             stdout_buf: list[str] = []
             stderr_buf: list[str] = []
             try:
@@ -426,12 +467,18 @@ class AiderAgent:
                     if proc.stdout in ready:
                         ln = proc.stdout.readline()
                         if ln:
+                            line = ln.rstrip()
                             stdout_buf.append(ln)
                             if es:
                                 es.emit("aider_token", {
-                                    "agent": self.role, "text": ln.rstrip(),
+                                    "agent": self.role, "text": line,
                                     "file": edit_file_str, "call_id": call_id,
                                 })
+                            if self.log_callback:
+                                try:
+                                    self.log_callback(self.role, line)
+                                except Exception:
+                                    pass
                     if proc.stderr in ready:
                         ln2 = proc.stderr.readline()
                         if ln2:
@@ -449,6 +496,16 @@ class AiderAgent:
                     es.emit("aider_done", {
                         "agent": self.role, "file": edit_file_str,
                         "success": rc == 0, "call_id": call_id,
+                    })
+                
+                if es and call_id.startswith("run-"):
+                    es.emit("task_done", {
+                        "id": call_id,
+                        "agent": self.role,
+                        "file": edit_file_str,
+                        "verdict": "SUCCESS" if rc == 0 else "FAILED",
+                        "attempts": attempt,
+                        "duration_s": round(time.time() - attempt_start, 1)
                     })
 
                 out = {
@@ -489,6 +546,7 @@ class AiderAgent:
         timeout: int = 120,
         rag_query: str = None,
     ) -> str:
+        self.report_status("running")
         read_files  = list(read_files or [])
         skill_files = self._skill_runner.resolve(self.skills)
         rag_files   = self.retrieve(rag_query or message[:200]) if (rag_query or message) else []
@@ -509,9 +567,17 @@ class AiderAgent:
                 cmd, cwd=str(self.workspace),
                 capture_output=True, text=True, timeout=timeout,
             )
+            if self.log_callback and result.stdout:
+                for line in result.stdout.splitlines():
+                    try:
+                        self.log_callback(self.role, line)
+                    except Exception:
+                        pass
+            self.report_status("idle")
             return result.stdout
         except subprocess.TimeoutExpired:
             logger.error("[%s] readonly timeout", self.role)
+            self.report_status("idle")
             return ""
 
     @staticmethod

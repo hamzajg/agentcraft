@@ -515,6 +515,7 @@ Guidelines:
         docs_dir = Path(workspace.get("docs_dir", "docs"))
         docs_dir.mkdir(parents=True, exist_ok=True)
         
+        self.report_status("running")
         self._log(f"Executing phase 0 plan for {architecture} architecture")
         logger.info("[supervisor] executing phase 0 plan for %s architecture", architecture)
         self.info(f"Executing phase 0 plan for {architecture} architecture")
@@ -596,6 +597,7 @@ Return the user's exact response.
                 "status": "failed",
                 "reason": "no user response"
             })
+            self.report_status("idle")
             return False
         
         self._log(f"Received user response: {user_response[:100]}")
@@ -631,6 +633,7 @@ Review and adjust these in your docs/ directory if needed.
         blueprint_path.write_text(blueprint_content)
         self._log(f"Created {blueprint_path}")
         logger.info("[supervisor] created %s", blueprint_path)
+        self.emit_file_written(blueprint_path)
         
         # Share on bus
         self.share_context("supervisor.phase0_blueprint", {
@@ -656,6 +659,7 @@ Review and adjust these in your docs/ directory if needed.
         self._log("Phase 0 documentation complete")
         logger.info("[supervisor] phase 0 documentation complete")
         self.complete("Phase 0 documentation complete", file=str(blueprint_path))
+        self.report_status("idle")
         return True
 
     def decide_agent_assignment(self, iteration: dict, architecture: str) -> str:

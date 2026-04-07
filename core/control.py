@@ -24,6 +24,7 @@ import logging
 import queue
 import threading
 import time
+import httpx
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -58,6 +59,43 @@ class _ControlChannel:
         self._directives: queue.Queue[str] = queue.Queue()
         self._approval_gates: dict[int, ApprovalGate] = {}
         self._approval_enabled    = True   # set False to skip gates
+        self._remote_url: str | None = None
+
+    def set_remote(self, url: str) -> None:
+        """Configure CC to check state from a remote server."""
+        self._remote_url = url.rstrip("/")
+        logger.info("[CC] remote checking enabled: %s", self._remote_url)
+
+    def _sync_remote(self) -> None:
+        """Sync local events from remote server state."""
+        if not self._remote_url: return
+        try:
+            resp = httpx.get(f"{self._remote_url}/api/control/state", timeout=2)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("stopped"):     self._stopped.set()
+                if data.get("pause_task"):  self._pause_after_task.set()
+                if data.get("pause_iter"):  self._pause_after_iter.set()
+                
+                # Directives
+                for d in data.get("directives", []):
+                    self._directives.put(d)
+                
+                # Gates
+                with self._mu:
+                    for gate_id, gate_data in data.get("gates", {}).items():
+                        gid = int(gate_id)
+                        if gid not in self._approval_gates:
+                            self._approval_gates[gid] = ApprovalGate(iteration_id=gid)
+                        gate = self._approval_gates[gid]
+                        if gate_data["approved"] is not None and not gate.event.is_set():
+                            gate.approved = gate_data["approved"]
+                            gate.reject_reason = gate_data["reason"]
+                            gate.event.set()
+        except Exception as e:
+            logger.debug("[CC] remote sync failed: %s", e)
+
+    # ── Commands (called by comms server) ─────────────────────────────────────
 
     # ── Commands (called by comms server) ─────────────────────────────────────
 
@@ -105,18 +143,38 @@ class _ControlChannel:
     def set_approval_gates(self, enabled: bool) -> None:
         self._approval_enabled = enabled
 
-    # ── Orchestrator hooks (called from orchestrator thread) ──────────────────
+    def reset(self) -> None:
+        """Reset all control flags and directives (called at build start)."""
+        self._pause_after_task.clear()
+        self._pause_after_iter.clear()
+        self._paused.clear()
+        self._stopped.clear()
+        with self._mu:
+            self._approval_gates.clear()
+            while not self._directives.empty():
+                try: self._directives.get_nowait()
+                except: break
+        
+        if self._remote_url:
+            try:
+                httpx.post(f"{self._remote_url}/api/control/reset", timeout=2)
+            except Exception as e:
+                logger.debug("[CC] remote reset failed: %s", e)
 
-    def check_after_task(self) -> None:
-        """Call after every task. Blocks if paused. Raises BuildStopped."""
+    # ── Orchestrator checks ───────────────────────────────────────────────────
+
+    def check(self) -> None:
+        """Called between tasks. Raises Paused or Stopped if requested."""
+        self._sync_remote()
         if self._stopped.is_set():
             raise BuildStopped()
         if self._pause_after_task.is_set():
             self._pause_after_task.clear()
             self._do_pause("after_task")
 
-    def check_after_iter(self) -> None:
-        """Call after every iteration. Blocks if paused. Raises BuildStopped."""
+    def check_iter(self) -> None:
+        """Called between iterations."""
+        self._sync_remote()
         if self._stopped.is_set():
             raise BuildStopped()
         if self._pause_after_iter.is_set():
@@ -130,6 +188,7 @@ class _ControlChannel:
 
     def pop_directive(self) -> Optional[str]:
         """Return and remove the next queued directive, or None."""
+        self._sync_remote()
         try:
             return self._directives.get_nowait()
         except queue.Empty:
@@ -144,14 +203,16 @@ class _ControlChannel:
         if not self._approval_enabled:
             return True
 
-        gate = ApprovalGate(iteration_id=iteration_id)
         with self._mu:
-            self._approval_gates[iteration_id] = gate
+            if iteration_id not in self._approval_gates:
+                self._approval_gates[iteration_id] = ApprovalGate(iteration_id=iteration_id)
+            gate = self._approval_gates[iteration_id]
 
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._stopped.is_set():
                 raise BuildStopped()
+            self._sync_remote()
             if gate.event.wait(timeout=2.0):
                 break
 
@@ -209,6 +270,7 @@ class _ControlChannel:
                 self._paused.clear()
                 raise BuildStopped()
             time.sleep(0.5)
+            self._sync_remote()
         ES.emit("resumed", {})
         logger.info("[CC] build resumed")
 
