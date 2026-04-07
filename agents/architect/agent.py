@@ -311,8 +311,10 @@ class ArchitectAgent(AiderAgent):
         # Default: use parent class handler (local LLM)
         return super().handle_query(question, context)
 
-    def run(self, message: str, read_files: list = None, edit_files: list = None, timeout: int = 300) -> dict:
+    def run(self, message: str, read_files: list = None, edit_files: list = None, timeout: int = None, log_callback: callable = None) -> dict:
         """
         Standard Aider agent run - delegates to parent class.
         """
-        return super().run(message, read_files, edit_files, timeout, log_callback=self.log_callback)
+        # Use provided log_callback or fall back to self.log_callback
+        cb = log_callback if log_callback is not None else self.log_callback
+        return super().run(message, read_files, edit_files, timeout, log_callback=cb)

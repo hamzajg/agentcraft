@@ -383,7 +383,8 @@ class AiderAgent:
             try:
                 proc = subprocess.Popen(
                     cmd, cwd=str(self.workspace),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL, text=True,
                 )
                 stdout_lines = []
                 stderr_lines = []
@@ -411,6 +412,12 @@ class AiderAgent:
                     proc.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    proc.wait()  # Ensure cleanup
+                    stdout_thread.join(timeout=2.0)
+                    stderr_thread.join(timeout=2.0)
+                    partial_out = "".join(stdout_lines)[-500:]
+                    logger.error("[%s] timeout %ds (attempt %d). Partial output: %s",
+                                 self.role, timeout, attempt, partial_out)
                     raise
 
                 stdout_thread.join()

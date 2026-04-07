@@ -43,7 +43,6 @@ comms/comms.db
 # Logs
 *.log
 logs/
-monitor/
 .rag/
 .ai/
 

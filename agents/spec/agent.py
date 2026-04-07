@@ -54,6 +54,12 @@ class SpecAgent(AiderAgent):
             logger.warning("[spec] no docs found in %s", docs_dir)
             return spec_file, use_cases_file
 
+        # Resume logic: skip if files already exist and are non-empty
+        if spec_file.exists() and spec_file.stat().st_size > 0:
+            if use_cases_file.exists() and use_cases_file.stat().st_size > 0:
+                logger.info("[spec] spec.md and use_cases.md already exist — skipping generation (resume mode)")
+                return spec_file, use_cases_file
+
         logger.info("[spec] step 1/3 — extract entities (%d docs)", len(doc_files))
 
         # ── Step 1: extract key entities — small, fast ────────────────────────
@@ -109,6 +115,7 @@ class SpecAgent(AiderAgent):
             ),
             read_files=context,
             edit_files=[spec_file],
+            timeout=1200,  # 20 minutes for complex spec writing
             log_callback=self.log_callback,
         )
         
@@ -135,6 +142,7 @@ class SpecAgent(AiderAgent):
             ),
             read_files=context2,
             edit_files=[use_cases_file],
+            timeout=1200,  # 20 minutes for use case writing
             log_callback=self.log_callback,
         )
         
@@ -166,6 +174,12 @@ class SpecAgent(AiderAgent):
         delta_spec_file = change_specs / "spec.md"
         design_file     = change_dir / "design.md"
         tasks_file      = change_dir / "tasks.md"
+
+        # Resume logic: skip if files already exist and are non-empty
+        if proposal_file.exists() and proposal_file.stat().st_size > 0:
+            if delta_spec_file.exists() and delta_spec_file.stat().st_size > 0:
+                logger.info("[spec] OpenSpec proposal and spec already exist — skipping (resume mode)")
+                return proposal_file, delta_spec_file
 
         # Step 1: proposal (why + what)
         logger.info("[spec] openspec step 1/3 — proposal")
