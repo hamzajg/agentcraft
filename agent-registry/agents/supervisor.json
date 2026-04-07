@@ -1,6 +1,0 @@
-{
-  "id": "supervisor",
-  "studioTeam": "Supervisor",
-  "description": "Planning and synthesis supervisor — decomposes tasks and aggregates results",
-  "tags": ["orchestration", "planning"]
-}

@@ -176,17 +176,20 @@ class SupervisorAgent(AiderAgent):
 
     def decide_phase_0(self, project_type: str, workspace: dict) -> dict:
         """
-        Decide Phase 0 strategy based on project type (legacy vs greenfield).
+        Decide Phase 0 strategy based on project type (legacy vs greenfield) and architecture style.
         
         Returns: {
             "strategy": "legacy_scan" | "greenfield_clarify",
             "action": str,
             "agents_involved": list[str],
-            "next_steps": list[str]
+            "next_steps": list[str],
+            "architecture_notes": list[str]
         }
         """
+        architecture = workspace.get("project", {}).get("architecture", "monolith")
+        
         if project_type == "legacy":
-            return {
+            strategy = {
                 "strategy": "legacy_scan",
                 "action": "Scan existing codebase and generate reference documentation",
                 "agents_involved": ["docs_agent"],
@@ -197,10 +200,30 @@ class SupervisorAgent(AiderAgent):
                     "Generate reference docs (architecture.md, domain-model.md)",
                     "Create API spec from existing endpoints",
                     "Proceed to Phase 1 with code as context"
-                ]
+                ],
+                "architecture_notes": []
             }
+            
+            # Add architecture-specific notes
+            if architecture == "microservice":
+                strategy["architecture_notes"] = [
+                    "Identify existing service boundaries and API contracts",
+                    "Document inter-service communication patterns",
+                    "Note service-specific technologies and frameworks",
+                    "Assess current deployment and orchestration setup"
+                ]
+            else:  # monolith
+                strategy["architecture_notes"] = [
+                    "Document monolithic application structure",
+                    "Identify internal module boundaries and dependencies",
+                    "Note shared components and utilities",
+                    "Assess current deployment approach"
+                ]
+                
+            return strategy
+            
         else:  # greenfield
-            return {
+            strategy = {
                 "strategy": "greenfield_clarify",
                 "action": "Request project clarification from user via collaborative dialogue",
                 "agents_involved": ["architect"],
@@ -212,5 +235,106 @@ class SupervisorAgent(AiderAgent):
                     "Generate architecture.md with design approach",
                     "User approves specs through comms collaboration",
                     "Proceed to Phase 1 execution"
-                ]
+                ],
+                "architecture_notes": []
             }
+            
+            # Add architecture-specific guidance
+            if architecture == "microservice":
+                strategy["architecture_notes"] = [
+                    "Clarify service boundaries and domain decomposition",
+                    "Define API contracts between services",
+                    "Specify technology stack per service",
+                    "Plan for service discovery and communication",
+                    "Consider deployment orchestration (Kubernetes, Docker Compose)",
+                    "Address cross-cutting concerns (auth, logging, monitoring)"
+                ]
+            else:  # monolith
+                strategy["architecture_notes"] = [
+                    "Define high-level module structure",
+                    "Specify technology stack for the application",
+                    "Plan for internal API design",
+                    "Consider deployment strategy (single container/app)",
+                    "Address scalability and maintainability concerns"
+                ]
+                
+            return strategy
+
+    def decide_agent_assignment(self, iteration: dict, architecture: str) -> str:
+        """
+        Decide which agent should handle an iteration based on architecture style.
+        
+        Args:
+            iteration: Iteration dict with name, description, etc.
+            architecture: "monolith" or "microservice"
+            
+        Returns: Agent name ("backend_dev", "config_agent", etc.)
+        """
+        iteration_name = iteration.get("name", "").lower()
+        description = iteration.get("description", "").lower()
+        
+        # Architecture-specific agent assignments
+        if architecture == "microservice":
+            # For microservices, prefer specialized agents for service-related work
+            if any(keyword in iteration_name + description for keyword in 
+                  ["api", "gateway", "service", "microservice", "endpoint"]):
+                return "backend_dev"  # Could be specialized service agent
+                
+            if any(keyword in iteration_name + description for keyword in
+                  ["docker", "compose", "kubernetes", "deployment", "orchestration"]):
+                return "config_agent"
+                
+            if any(keyword in iteration_name + description for keyword in
+                  ["monitoring", "logging", "tracing", "observability"]):
+                return "config_agent"
+                
+        else:  # monolith
+            # For monoliths, standard agent assignments
+            if any(keyword in iteration_name + description for keyword in
+                  ["database", "model", "entity", "schema"]):
+                return "backend_dev"
+                
+            if any(keyword in iteration_name + description for keyword in
+                  ["config", "deployment", "infrastructure"]):
+                return "config_agent"
+        
+        # Default assignment
+        return iteration.get("agent", "backend_dev")
+
+    def decide_service_architecture(self, services: list[dict], architecture: str) -> dict:
+        """
+        For microservice projects, decide on service architecture and communication patterns.
+        
+        Args:
+            services: List of service definitions
+            architecture: Should be "microservice"
+            
+        Returns: Architecture decisions dict
+        """
+        if architecture != "microservice":
+            return {"pattern": "monolith", "services": [], "communication": "internal"}
+            
+        decisions = {
+            "pattern": "microservice",
+            "services": services,
+            "communication": {
+                "protocol": "REST",  # or "gRPC", "GraphQL"
+                "discovery": "service-registry",
+                "gateway": "api-gateway",
+                "auth": "jwt-tokens"
+            },
+            "deployment": {
+                "orchestration": "docker-compose",  # or "kubernetes"
+                "scaling": "horizontal",
+                "monitoring": "centralized"
+            },
+            "cross_cutting": [
+                "authentication",
+                "logging", 
+                "monitoring",
+                "configuration",
+                "circuit-breakers"
+            ]
+        }
+        
+        return decisions

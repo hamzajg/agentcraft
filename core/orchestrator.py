@@ -110,6 +110,9 @@ class Orchestrator:
         self.workspace.mkdir(parents=True, exist_ok=True)
         (self.workspace / ".ai").mkdir(exist_ok=True)
 
+        # Load architecture from workspace config
+        self.architecture = self._load_architecture()
+
         # Framework loader
         self.fw = FrameworkLoader(framework_id)
 
@@ -125,6 +128,18 @@ class Orchestrator:
             model=model, framework_id=framework_id,
             docs_dir=str(docs_dir), workspace=str(workspace),
         )
+
+    def _load_architecture(self) -> str:
+        """Load architecture style from workspace.yaml."""
+        try:
+            ws_file = self.workspace.parent / "workspace.yaml"
+            if ws_file.exists():
+                import yaml
+                ws = yaml.safe_load(ws_file.read_text()) or {}
+                return ws.get("project", {}).get("architecture", "monolith")
+        except Exception as e:
+            logger.warning("Failed to load architecture from workspace.yaml: %s", e)
+        return "monolith"
 
     def _send_log(self, agent_id: str, message: str):
         """Send log to comms server in background thread (non-blocking)."""
@@ -220,9 +235,10 @@ class Orchestrator:
                 pass
             
             project_type = ws.get("project", {}).get("type", "greenfield")
+            architecture = ws.get("project", {}).get("architecture", "monolith")
             
             # Supervisor decides phase 0 strategy
-            phase_0_decision = self.supervisor.decide_phase_0(project_type, {"workspace": str(self.workspace)})
+            phase_0_decision = self.supervisor.decide_phase_0(project_type, {"workspace": str(self.workspace), "project": {"architecture": architecture}})
             logger.info("[orchestrator] phase 0 strategy: %s", phase_0_decision["strategy"])
             
             try:
@@ -464,6 +480,16 @@ class Orchestrator:
             tasks = self.planner.decompose(iteration, self.docs_dir, prior)
             if not tasks:
                 break
+            
+            # Apply architecture-aware agent assignments
+            for task in tasks:
+                original_agent = task.get("agent", "backend_dev")
+                architecture_agent = self.supervisor.decide_agent_assignment(task, self.architecture)
+                if architecture_agent != original_agent:
+                    logger.info("[orchestrator] architecture override: %s -> %s for task '%s'", 
+                              original_agent, architecture_agent, task.get("name", ""))
+                    task["agent"] = architecture_agent
+            
             self._warn_tdd(tasks, iteration["id"])
             result.task_results = []
             all_ok = True

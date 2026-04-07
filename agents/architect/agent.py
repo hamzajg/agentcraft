@@ -47,23 +47,32 @@ class ArchitectAgent(AiderAgent):
             llm_client=llm_client,
         )
 
-    def _phase_prompt(self, phase: int, start_id: int) -> str:
+    def _phase_prompt(self, phase: int, start_id: int, architecture: str = None) -> str:
         """Generate prompt for planning a specific phase."""
+        arch_note = ""
+        if architecture == "microservice":
+            arch_note = "\nARCHITECTURE: Microservice - Plan for service boundaries, API contracts, and inter-service communication."
+        elif architecture == "monolith":
+            arch_note = "\nARCHITECTURE: Monolith - Plan for modular structure within single application."
+        
         PHASE_DESC = {
             1: (
                 "Phase 1 — core logic only.\n"
                 "NO Spring web, NO HTTP, NO external calls, NO file persistence.\n"
                 "Only: domain model, business logic, in-memory data, interfaces."
+                f"{arch_note}"
             ),
             2: (
                 "Phase 2 — API layer.\n"
                 "Spring Boot controllers, HTTP routes, wire real implementations.\n"
                 "Reads Phase 1 files as context."
+                f"{arch_note}"
             ),
             3: (
                 "Phase 3 — infrastructure only.\n"
                 "Dockerfile, docker-compose, CI pipeline.\n"
                 "Usually 1 iteration is enough."
+                f"{arch_note}"
             ),
         }
         return (
@@ -82,10 +91,26 @@ class ArchitectAgent(AiderAgent):
             '    "depends_on": [],\n'
             '    "acceptance_criteria": ["compiles"]\n'
             "  }\n"
-            "]"
+            "]" 
         )
 
+    def _load_architecture(self) -> str:
+        """Load architecture style from workspace.yaml."""
+        try:
+            ws_file = self.workspace.parent / "workspace.yaml"
+            if ws_file.exists():
+                import yaml
+                ws = yaml.safe_load(ws_file.read_text()) or {}
+                return ws.get("project", {}).get("architecture", "monolith")
+        except Exception as e:
+            logger.warning("Failed to load architecture from workspace.yaml: %s", e)
+        return "monolith"
+
     def plan(self, docs_dir: Path) -> list[dict]:
+        # Load architecture from workspace config
+        architecture = self._load_architecture()
+        logger.info("[architect] planning for %s architecture", architecture)
+        
         ai_dir = self.workspace / ".ai"
         ai_dir.mkdir(exist_ok=True)
         iterations_file = ai_dir / "iterations.json"
@@ -305,7 +330,7 @@ Review and adjust these in your docs/ directory if needed.
         logger.info("[architect] planning Phase 1 (core logic)")
         phase1_file = ai_dir / "phase1.json"
         self.run(
-            message=self._phase_prompt(1, next_id),
+            message=self._phase_prompt(1, next_id, architecture),
             read_files=ctx,
             edit_files=[phase1_file],
             timeout=120,
@@ -320,7 +345,7 @@ Review and adjust these in your docs/ directory if needed.
         phase2_file = ai_dir / "phase2.json"
         ctx2 = ctx + ([phase1_file] if phase1_file.exists() else [])
         self.run(
-            message=self._phase_prompt(2, next_id),
+            message=self._phase_prompt(2, next_id, architecture),
             read_files=ctx2,
             edit_files=[phase2_file],
             timeout=120,
@@ -334,7 +359,7 @@ Review and adjust these in your docs/ directory if needed.
         logger.info("[architect] planning Phase 3 (infra)")
         phase3_file = ai_dir / "phase3.json"
         self.run(
-            message=self._phase_prompt(3, next_id),
+            message=self._phase_prompt(3, next_id, architecture),
             read_files=ctx,
             edit_files=[phase3_file],
             timeout=90,
