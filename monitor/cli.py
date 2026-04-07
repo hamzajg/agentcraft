@@ -2,9 +2,9 @@
 cli.py — live terminal system monitor for the agent team.
 
 Usage:
-    python ai-team/monitor/cli.py
-    python ai-team/monitor/cli.py --interval 2
-    python ai-team/monitor/cli.py --once          # single snapshot, then exit
+    python monitor/cli.py
+    python monitor/cli.py --interval 2
+    python monitor/cli.py --once          # single snapshot, then exit
 
 Shows: CPU · RAM · GPU · VRAM gauges + live agent statuses from comms server.
 Updates in-place using ANSI escape codes — no curses dependency.

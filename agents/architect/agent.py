@@ -91,7 +91,7 @@ class ArchitectAgent(AiderAgent):
             '    "depends_on": [],\n'
             '    "acceptance_criteria": ["compiles"]\n'
             "  }\n"
-            "]" 
+            "]"
         )
 
     def _load_architecture(self) -> str:

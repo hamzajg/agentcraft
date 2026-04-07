@@ -23,6 +23,8 @@ import threading
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.bus import AgentBus
+from core.event_stream import ES
+from core.control import CC, BuildStopped, BuildPaused
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
@@ -213,11 +215,16 @@ class Orchestrator:
     def run(self) -> RunLog:
         total_start = time.time()
         self._banner("AUTONOMOUS AGENT TEAM — START")
+        ES.emit("build_started", {
+            "model": self.model, "framework": self.framework_id or "none",
+        })
 
         # ── Phase: RAG setup ──────────────────────────────────────────────────
         self._setup_rag()
         self._setup_llm()
         AgentBus.reset()          # fresh bus per build run
+        CC.reset()                # fresh control flags
+        ES.clear()                # fresh event ring
         self._build_agents()
         self._register_all_on_bus()
         self.run_log.rag_enabled = self._rag is not None and self._rag.enabled
@@ -406,14 +413,27 @@ class Orchestrator:
             if iteration["id"] < self.start_from:
                 continue
             phase       = iteration.get("phase", 1)
-            self._comms.info(f"Starting Iteration {iteration['id']} (Phase {phase}): {iteration['name']}")
+            try:
+                CC.check_stop()
+            except BuildStopped:
+                ES.emit("stopped", {})
+                break
             iter_result = self._run_iteration(iteration)
             self.run_log.iterations.append(iter_result)
             self._save_log()
 
             if not iter_result.approved:
                 logger.error("[orchestrator] iter %d failed — stopping", iteration["id"])
-                self._comms.info(f"Iteration {iteration['id']} failed.")
+                break
+            # Approval gate and pause check
+            try:
+                gate_ok = CC.wait_approval(iteration["id"])
+                if not gate_ok:
+                    logger.info("[orchestrator] iter %d rejected by user", iteration["id"])
+                    break
+                CC.check_after_iter()
+            except BuildStopped:
+                ES.emit("stopped", {})
                 break
             
             self._comms.complete(f"Iteration {iteration['id']} complete and approved.")
@@ -434,7 +454,10 @@ class Orchestrator:
         self.run_log.total_duration_s = round(time.time() - total_start, 1)
         self._save_log()
         self._banner(f"COMPLETE — {self.run_log.total_duration_s:.0f}s")
-        self._comms.complete(f"Bootstrap complete in {self.run_log.total_duration_s:.0f}s. {len(self.run_log.iterations)} iterations processed.")
+        ES.emit("build_done", {
+            "duration_s": self.run_log.total_duration_s,
+            "approved":   sum(1 for i in self.run_log.iterations if i.approved),
+        })
         return self.run_log
 
     # ── Bus wiring ───────────────────────────────────────────────────────────
@@ -512,21 +535,21 @@ class Orchestrator:
             da.run(
                 message="Review and enrich spec.md and use_cases.md.",
                 read_files=list(self.docs_dir.glob("*.md")),
-                edit_files=[spec_file, uc_file],
+                edit_files=[spec_file] + ([uc_file] if uc_file.exists() else []),
+                timeout=180,
                 log_callback=self.log_callback,
             )
-        return [spec_file, uc_file]
+        return [f for f in [spec_file, uc_file] if f.exists()]
 
     # ── Iteration ─────────────────────────────────────────────────────────────
 
     def _run_iteration(self, iteration: dict) -> IterationResult:
         start = time.time()
         phase = iteration.get("phase", 1)
-        iteration_name = iteration.get("name", "unknown")
-        
-        logger.info("\n" + "="*60)
-        logger.info("ITERATION %d (Phase %d): %s", iteration["id"], phase, iteration_name)
-        logger.info("="*60)
+        logger.info("--- ITER %d (ph%d): %s ---", iteration["id"], phase, iteration["name"])
+        ES.emit("iter_started", {
+            "id": iteration["id"], "name": iteration["name"], "phase": phase,
+        })
 
         result = IterationResult(
             iteration_id=iteration["id"], phase=phase,
@@ -551,7 +574,6 @@ class Orchestrator:
             self._warn_tdd(tasks, iteration["id"])
             result.task_results = []
             all_ok = True
-
             if self.parallel:
                 # Run tasks in parallel
                 with ThreadPoolExecutor(max_workers=min(len(tasks), 4)) as executor:
@@ -566,6 +588,17 @@ class Orchestrator:
                 # Run tasks sequentially (default)
                 for task in tasks:
                     tr = self._run_task(task, iteration["id"])
+                    ES.emit("task_done", {
+                        "id": task.get("id"), "agent": task.get("agent"),
+                        "file": task.get("file"), "verdict": tr.final_verdict,
+                        "attempts": tr.attempts, "duration_s": tr.duration_s,
+                    })
+                    try:
+                        CC.check_after_task()
+                    except BuildStopped:
+                        ES.emit("stopped", {})
+                        result.task_results.append(tr)
+                        return result
                     result.task_results.append(tr)
                     self._log_task_result(tr)
                     if not tr.approved:
@@ -606,11 +639,17 @@ class Orchestrator:
     def _run_task(self, task: dict, iteration_id: int) -> TaskResult:
         start     = time.time()
         agent_key = task.get("agent", "backend_dev")
-        task_name = task.get("name", "unknown")
-        
-        # Log agent activity
-        logger.info("\n  ➤ [%s] Working on: %s", agent_key.upper(), task_name)
-        
+        ES.emit("task_started", {
+            "id": task.get("id"), "agent": agent_key,
+            "file": task.get("file"), "description": task.get("description","")[:120],
+            "iteration_id": iteration_id,
+        })
+        # Inject any pending directive
+        directive = CC.pop_directive()
+        if directive:
+            task = dict(task)
+            task["description"] = task.get("description","") + f"\n\nDIRECTIVE:\n{directive}"
+            ES.emit("directive_injected", {"text": directive, "task_id": task.get("id")})
         if agent_key == "test_dev":
             return self._run_test_dev(task, iteration_id, start)
         return self._run_worker(task, agent_key, iteration_id, start)

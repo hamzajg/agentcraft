@@ -10,8 +10,8 @@ SkillRunner.resolve(skill_names) -> list[Path]
   Returns markdown files to pass as --read to Aider.
 
 Resolution order (framework skill shadows global skill of same name):
-  1. ai-team/frameworks/<fw>/skills/<name>/
-  2. ai-team/skills/<name>/
+  1. frameworks/<fw>/skills/<name>/
+  2. skills/<name>/
 """
 
 import logging

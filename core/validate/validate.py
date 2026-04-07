@@ -18,7 +18,7 @@ Rules (from workspace.yaml enforcement section):
 Also validates:
   - workspace.yaml is valid YAML and has required fields
   - docs/ contains at least one .md file
-  - ai-team/prompts/ contains a prompt for every agent_configs/ entry
+  - agents/prompts/ contains a prompt for every agent_configs/ entry
 """
 
 import sys
@@ -174,8 +174,8 @@ def check_docs_present(ws: dict, report: Report):
 
 
 def check_agent_configs_have_prompts(report: Report):
-    configs_dir = REPO_ROOT / "ai-team" / "agent_configs"
-    prompts_dir = REPO_ROOT / "ai-team" / "prompts"
+    configs_dir = REPO_ROOT / "agents" / "agent_configs"
+    prompts_dir = REPO_ROOT / "agents" / "prompts"
     if not configs_dir.exists():
         return
     for cfg in configs_dir.glob("*.yaml"):
@@ -191,7 +191,7 @@ def check_workspace_yaml_present(report: Report):
     if not WORKSPACE.exists():
         report.error(
             "workspace.yaml not found. This file configures the agent team "
-            "for this project. See ai-team/validate/workspace.yaml.example"
+            "for this project. See agents/validate/workspace.yaml.example"
         )
 
 

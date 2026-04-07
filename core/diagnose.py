@@ -6,9 +6,9 @@ Detects CPU, RAM, GPU, and VRAM, scores the machine,
 selects appropriate Ollama models, and writes workspace.yaml + model-profile.yaml.
 
 Run once before your first build:
-    python ai-team/diagnose.py
-    python ai-team/diagnose.py --dry-run       # show selection, don't write
-    python ai-team/diagnose.py --pull           # also pull models from Ollama
+    python core/diagnose.py
+    python core/diagnose.py --dry-run       # show selection, don't write
+    python core/diagnose.py --pull           # also pull models from Ollama
 """
 
 import argparse

@@ -119,7 +119,7 @@ def list_agents_with_history() -> list[dict]:
                    SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS unread,
                    MAX(created_at) AS last_active
             FROM messages
-            GROUP BY agent_id            
+            GROUP BY agent_id
             ORDER BY last_active DESC
         """).fetchall()
     

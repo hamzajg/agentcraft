@@ -1,5 +1,5 @@
 # workspace.yaml — copy this file to your project root and fill it in.
-# This is the only file that changes when you use ai-team on a different project.
+# This is the only file that changes when you use agents on a different project.
 
 project:
   name: my-project
@@ -35,7 +35,7 @@ enforcement:
     - "**/Makefile"
   human_paths:
     - docs/
-    - ai-team/
+    - agents/
     - comms-server/
   agent_paths:
     - src/

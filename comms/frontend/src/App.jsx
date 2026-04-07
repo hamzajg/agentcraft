@@ -7,11 +7,13 @@ import { StatusDot }      from './components/StatusDot'
 import { MonitorPage }    from './pages/MonitorPage'
 import { RagPage }        from './pages/RagPage'
 import { BusPage }        from './pages/BusPage'
+import { LivePage }       from './pages/LivePage'
 import { ConsolePage }    from './pages/ConsolePage'
 import { useWebSocket }   from './hooks/useWebSocket'
 import { api }            from './lib/api'
 
 const TABS = [
+  { id: 'live',    label: 'Live',    icon: LiveIcon    },
   { id: 'chat',    label: 'Chat',    icon: ChatIcon    },
   { id: 'monitor', label: 'Monitor', icon: MonitorIcon },
   { id: 'rag',     label: 'RAG',     icon: RagIcon     },
@@ -109,6 +111,15 @@ export default function App() {
 
   useWebSocket(handleWsEvent)
 
+  // ── Channel selection ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!activeId) return
+    if (messages[activeId]?.length > 0) return
+    api.messages(activeId).then(msgs =>
+      setMessages(prev => ({ ...prev, [activeId]: msgs }))
+    ).catch(() => {})
+  }, [activeId])
+  
   // ── Load initial data ───────────────────────────────────────────────────
   useEffect(() => {
     // Load channels and pending messages
@@ -257,7 +268,9 @@ export default function App() {
         )}
 
         {/* Main content */}
-        {tab === 'rag' ? (
+        {tab === 'live' ? (
+          <LivePage />
+        ) : tab === 'rag' ? (
           <RagPage />
         ) : tab === 'bus' ? (
           <BusPage />
@@ -358,6 +371,17 @@ function MonitorIcon() {
       <rect x="1" y="2" width="14" height="10" rx="1.5" />
       <path d="M5 15h6M8 12v3" strokeLinecap="round" />
       <path d="M4 9l2-3 2 2 2-4 2 3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function LiveIcon() {
+  return (
+    <svg width='16' height='16' viewBox='0 0 16 16' fill='none'
+         stroke='currentColor' strokeWidth='1.5' strokeLinecap='round'>
+      <circle cx='8' cy='8' r='2'/>
+      <path d='M8 1v2M8 13v2M1 8h2M13 8h2'/>
+      <path d='M3.5 3.5l1.5 1.5M11 11l1.5 1.5M11 5L9.5 6.5M5 11l-1.5 1.5'/>
     </svg>
   )
 }

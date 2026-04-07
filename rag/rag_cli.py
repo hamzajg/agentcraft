@@ -13,10 +13,10 @@ Commands:
   reindex            re-index docs/ and repo root into the store
 
 Usage:
-  python ai-team/rag/rag_cli.py stats
-  python ai-team/rag/rag_cli.py files --top 20
-  python ai-team/rag/rag_cli.py search "AgentMessage sealed class"
-  python ai-team/rag/rag_cli.py queries --limit 10
+  python rag/rag_cli.py stats
+  python rag/rag_cli.py files --top 20
+  python rag/rag_cli.py search "AgentMessage sealed class"
+  python rag/rag_cli.py queries --limit 10
 """
 
 import argparse

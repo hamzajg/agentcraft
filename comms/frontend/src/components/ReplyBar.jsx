@@ -47,45 +47,45 @@ export function ReplyBar({ pendingMsgId, agentLabel, onSend, disabled, channels 
 
       {/* Input area */}
       <div className="flex gap-3 items-end">
-        <div className="flex-1 relative">
-          <textarea
-            ref={ref}
-            value={text}
-            onChange={e => setText(e.target.value)}
-            onKeyDown={onKey}
-            placeholder={pendingMsgId
+      <div className="flex-1 relative">
+        <textarea
+          ref={ref}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={onKey}
+          placeholder={pendingMsgId
               ? `Reply (mention agents with @agent)…`
-              : 'No pending questions'}
-            disabled={!pendingMsgId || disabled}
-            rows={1}
-            className="
-              w-full bg-surface border border-border rounded-lg
-              px-4 py-2.5 text-sm text-gray-200 resize-none
-              placeholder:text-muted
-              focus:outline-none focus:border-accent/60
-              disabled:opacity-40 disabled:cursor-not-allowed
-              transition-colors leading-relaxed
-              min-h-[44px] max-h-40
-            "
-            style={{ fieldSizing: 'content' }}
-          />
-          <p className="absolute right-3 bottom-2 text-[10px] text-muted select-none">
-            {pendingMsgId ? '↵ send' : ''}
-          </p>
-        </div>
-        <button
-          onClick={send}
-          disabled={!canSend}
+            : 'No pending questions'}
+          disabled={!pendingMsgId || disabled}
+          rows={1}
           className="
-            h-[44px] px-5 rounded-lg text-sm font-medium
-            bg-accent hover:bg-accent/90 text-white
-            disabled:opacity-30 disabled:cursor-not-allowed
-            transition-all active:scale-95
+            w-full bg-surface border border-border rounded-lg
+            px-4 py-2.5 text-sm text-gray-200 resize-none
+            placeholder:text-muted
+            focus:outline-none focus:border-accent/60
+            disabled:opacity-40 disabled:cursor-not-allowed
+            transition-colors leading-relaxed
+            min-h-[44px] max-h-40
           "
-        >
-          Send
-        </button>
+          style={{ fieldSizing: 'content' }}
+        />
+        <p className="absolute right-3 bottom-2 text-[10px] text-muted select-none">
+          {pendingMsgId ? '↵ send' : ''}
+        </p>
       </div>
+      <button
+        onClick={send}
+        disabled={!canSend}
+        className="
+          h-[44px] px-5 rounded-lg text-sm font-medium
+          bg-accent hover:bg-accent/90 text-white
+          disabled:opacity-30 disabled:cursor-not-allowed
+          transition-all active:scale-95
+        "
+      >
+        Send
+      </button>
+    </div>
     </div>
   )
 }

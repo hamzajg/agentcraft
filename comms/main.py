@@ -687,3 +687,248 @@ async def api_bus_receive_message(message: dict):
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to process bus message: {e}")
         return {"status": "error", "message": str(e)}
+
+# ═══════════════════════════════════════════════════════════════════════
+# EventStream → WebSocket bridge
+# ═══════════════════════════════════════════════════════════════════════
+
+async def _es_subscriber(event: dict):
+    """Forward every EventStream event to all WS clients."""
+    await manager.broadcast(WsEvent(event=event["type"], payload=event))
+
+
+@app.on_event("startup")
+async def _startup_event_bridge():
+    import asyncio
+    loop = asyncio.get_running_loop()
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from core.event_stream import ES
+        ES.set_loop(loop)
+        ES.subscribe(_es_subscriber)
+        logger.info("[comms] EventStream bridge wired")
+    except Exception as e:
+        logger.warning("[comms] EventStream not available: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Live observability endpoints
+# ═══════════════════════════════════════════════════════════════════════
+
+def _get_es():
+    try:
+        from core.event_stream import ES
+        return ES
+    except Exception:
+        return None
+
+
+def _get_cc():
+    try:
+        from core.control import CC
+        return CC
+    except Exception:
+        return None
+
+
+@app.get("/api/live/events")
+async def live_events(limit: int = 200, since: float = 0):
+    """
+    Recent events from the ring buffer.
+    Pass ?since=<ts> to get only events newer than that timestamp.
+    """
+    es = _get_es()
+    if not es:
+        return []
+    if since > 0:
+        return es.since(since)
+    return es.recent(limit)
+
+
+@app.get("/api/live/state")
+async def live_state():
+    """Current build state: control flags, approval gates, whether streaming is active."""
+    cc = _get_cc()
+    es = _get_es()
+    cc_state = cc.state() if cc else {}
+    recent   = es.recent(10) if es else []
+    # Derive running state from last few events
+    last_types = [e["type"] for e in recent]
+    build_running = any(t in ("build_started", "task_started", "iter_started", "aider_token")
+                        for t in last_types)
+    build_done    = "build_done" in last_types or "stopped" in last_types
+    return {
+        "build_running": build_running and not build_done,
+        "build_done":    build_done,
+        **cc_state,
+    }
+
+
+@app.get("/api/live/file")
+async def live_file(path: str):
+    """
+    Read a file from the workspace (partial or complete).
+    Used by the UI file peek drawer.
+    """
+    from pathlib import Path as P
+    repo_root = P(__file__).parent.parent
+    try:
+        import yaml
+        ws     = yaml.safe_load((repo_root / "workspace.yaml").read_text())
+        output = repo_root / ws.get("paths", {}).get("output", ".")
+    except Exception:
+        output = repo_root
+    target = output / path.lstrip("/")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    # Safety: only serve files under workspace
+    try:
+        target.resolve().relative_to(output.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path outside workspace")
+    return {
+        "path":       path,
+        "content":    target.read_text(errors="replace"),
+        "size_bytes": target.stat().st_size,
+        "exists":     True,
+    }
+
+
+@app.get("/api/live/stream")
+async def live_stream():
+    """
+    SSE stream of EventStream events.
+    Alternative to WebSocket for clients that prefer SSE.
+    """
+    import asyncio
+    from fastapi.responses import StreamingResponse
+
+    es = _get_es()
+    if not es:
+        async def _empty():
+            yield "data: {}\n\n"
+        return StreamingResponse(_empty(), media_type="text/event-stream")
+
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def _cb(event: dict):
+        await q.put(event)
+
+    es.subscribe(_cb)
+
+    async def generate():
+        try:
+            # Send history first
+            for ev in es.recent(100):
+                import json
+                yield f"data: {json.dumps(ev)}\n\n"
+            # Then stream new events
+            while True:
+                ev = await asyncio.wait_for(q.get(), timeout=30)
+                yield f"data: {json.dumps(ev)}\n\n"
+        except asyncio.TimeoutError:
+            yield "data: {\"type\":\"ping\"}\n\n"
+        finally:
+            es.unsubscribe(_cb)
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                              headers={"Cache-Control": "no-cache",
+                                       "X-Accel-Buffering": "no"})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Control endpoints
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.post("/api/control/pause")
+async def control_pause():
+    """Pause the build after the current task completes."""
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.pause_after_task()
+    return {"status": "pause_after_task queued"}
+
+
+@app.post("/api/control/pause-iter")
+async def control_pause_iter():
+    """Pause the build after the current iteration completes."""
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.pause_after_iter()
+    return {"status": "pause_after_iter queued"}
+
+
+@app.post("/api/control/resume")
+async def control_resume():
+    """Resume a paused build."""
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.resume()
+    return {"status": "resumed"}
+
+
+@app.post("/api/control/stop")
+async def control_stop():
+    """Stop the build cleanly after the current step."""
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.stop()
+    return {"status": "stop signal sent"}
+
+
+@app.post("/api/control/directive")
+async def control_directive(body: dict):
+    """
+    Inject a directive into the next agent's task context.
+    Body: {"text": "Use CompletableFuture not Reactor throughout"}
+    """
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text is required")
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.inject_directive(text)
+    return {"status": "directive queued", "text": text}
+
+
+@app.post("/api/control/approve")
+async def control_approve(body: dict):
+    """Approve a pending iteration gate. Body: {"iteration_id": 2}"""
+    iter_id = body.get("iteration_id")
+    if iter_id is None:
+        raise HTTPException(status_code=422, detail="iteration_id required")
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.approve(int(iter_id))
+    return {"status": "approved", "iteration_id": iter_id}
+
+
+@app.post("/api/control/reject")
+async def control_reject(body: dict):
+    """Reject a pending iteration gate. Body: {"iteration_id": 2, "reason": "..."}"""
+    iter_id = body.get("iteration_id")
+    reason  = body.get("reason", "Rejected by user")
+    if iter_id is None:
+        raise HTTPException(status_code=422, detail="iteration_id required")
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.reject(int(iter_id), reason)
+    return {"status": "rejected", "iteration_id": iter_id, "reason": reason}
+
+
+@app.post("/api/control/gates")
+async def control_gates(body: dict):
+    """Enable or disable approval gates. Body: {"enabled": true}"""
+    cc = _get_cc()
+    if not cc:
+        raise HTTPException(status_code=503, detail="No build running")
+    cc.set_approval_gates(bool(body.get("enabled", True)))
+    return {"approval_gates_enabled": bool(body.get("enabled", True))}

@@ -7,9 +7,9 @@ What archiving does:
   3. Moves the change folder to openspec/changes/archive/YYYY-MM-DD-<name>/
 
 Usage:
-  python ai-team/rag/openspec_archive.py add-dark-mode
-  python ai-team/rag/openspec_archive.py add-dark-mode --dry-run
-  python ai-team/rag/openspec_archive.py --list      # show archivable changes
+  python rag/openspec_archive.py add-dark-mode
+  python rag/openspec_archive.py add-dark-mode --dry-run
+  python rag/openspec_archive.py --list      # show archivable changes
 """
 
 import argparse

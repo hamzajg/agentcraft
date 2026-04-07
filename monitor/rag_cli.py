@@ -9,20 +9,20 @@ Commands:
   purge     — delete the entire store (with confirmation)
 
 Usage:
-  python ai-team/monitor/rag_cli.py status
-  python ai-team/monitor/rag_cli.py search "message bus reactive"
-  python ai-team/monitor/rag_cli.py search "agent supervisor" --collection codebase
-  python ai-team/monitor/rag_cli.py files --sort size --limit 20
-  python ai-team/monitor/rag_cli.py files --language java
-  python ai-team/monitor/rag_cli.py reindex
-  python ai-team/monitor/rag_cli.py purge
+  python monitor/rag_cli.py status
+  python monitor/rag_cli.py search "message bus reactive"
+  python monitor/rag_cli.py search "agent supervisor" --collection codebase
+  python monitor/rag_cli.py files --sort size --limit 20
+  python monitor/rag_cli.py files --language java
+  python monitor/rag_cli.py reindex
+  python monitor/rag_cli.py purge
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-# Resolve repo root and add ai-team to path
+# Resolve repo root and add agents to path
 SCRIPT_DIR = Path(__file__).parent
 AI_TEAM    = SCRIPT_DIR.parent
 REPO_ROOT  = AI_TEAM.parent
