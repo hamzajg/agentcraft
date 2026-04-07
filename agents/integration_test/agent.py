@@ -96,6 +96,7 @@ class IntegrationTestAgent(AiderAgent):
             read_files=read_files,
             edit_files=[target],
             timeout=120,
+            log_callback=self.log_callback,
         )
         result["test_file"] = test_file
         return [result]
@@ -133,6 +134,7 @@ class IntegrationTestAgent(AiderAgent):
             read_files=read_files,
             edit_files=[target],
             timeout=90,
+            log_callback=self.log_callback,
         )
         result["test_file"] = test_file
         return result
@@ -159,6 +161,7 @@ class IntegrationTestAgent(AiderAgent):
             read_files=read_files,
             edit_files=[target],
             timeout=120,
+            log_callback=self.log_callback,
         )
         result["test_file"] = test_file
         return result

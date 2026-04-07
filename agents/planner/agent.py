@@ -176,6 +176,7 @@ class PlannerAgent(AiderAgent):
             read_files=base_ctx,
             edit_files=[out_file],
             timeout=90,
+            log_callback=self.log_callback,
         )
 
         if out_file.exists():

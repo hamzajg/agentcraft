@@ -367,7 +367,29 @@ class Orchestrator:
         self._save_log()
 
         # ── Phase: Iteration execution ────────────────────────────────────────
-        completed_phases: set[int] = set()
+        
+        # Auto-resume: Check if we have a previous run log with completed iterations
+        if self.start_from == 1 and self.run_log.iterations:
+            # Find the last completed iteration
+            last_completed = None
+            completed_phases = set()
+            for iter_result in self.run_log.iterations:
+                if iter_result.approved:
+                    last_completed = iter_result.iteration_id
+                    # Track which phases are already complete
+                    iter_data = next((i for i in iterations if i["id"] == iter_result.iteration_id), None)
+                    if iter_data:
+                        completed_phases.add(iter_data.get("phase", 1))
+            
+            if last_completed:
+                # Find the next iteration to run
+                next_iteration = last_completed + 1
+                logger.info("\n[AUTO-RESUME] Detected previous run - last completed: iteration %d", last_completed)
+                logger.info("[AUTO-RESUME] Resuming from iteration %d", next_iteration)
+                logger.info("[AUTO-RESUME] Already completed phases: %s\n", sorted(completed_phases))
+                self.start_from = next_iteration
+        else:
+            completed_phases = set()
         for iteration in iterations:
             if iteration["id"] < self.start_from:
                 continue
@@ -384,6 +406,7 @@ class Orchestrator:
                          if i.get("phase", 1) == phase and i["id"] > iteration["id"]]
             if not remaining and phase not in completed_phases:
                 completed_phases.add(phase)
+                logger.info("\n  [PHASE %d COMPLETE] Running CI/CD infrastructure...", phase)
                 self._run_cicd_phase(phase)
                 self._save_log()
 
@@ -461,22 +484,32 @@ class Orchestrator:
 
         logger.info("[orchestrator] PHASE 0: spec...")
         spec_file, uc_file = self.spec_agent.specify(self.docs_dir)
+        
+        # Check if spec generation succeeded
+        if spec_file is None or uc_file is None:
+            logger.error("[orchestrator] PHASE 0 spec generation failed - files not created")
+            raise RuntimeError("Spec agent failed to generate documentation files")
+        
         if spec_file.exists():
             da = self._make(DocsAgent)
             da.run(
                 message="Review and enrich spec.md and use_cases.md.",
                 read_files=list(self.docs_dir.glob("*.md")),
-                edit_files=[spec_file] + ([uc_file] if uc_file.exists() else []),
-                timeout=180,
+                edit_files=[spec_file, uc_file],
+                log_callback=self.log_callback,
             )
-        return [f for f in [spec_file, uc_file] if f.exists()]
+        return [spec_file, uc_file]
 
     # ── Iteration ─────────────────────────────────────────────────────────────
 
     def _run_iteration(self, iteration: dict) -> IterationResult:
         start = time.time()
         phase = iteration.get("phase", 1)
-        logger.info("--- ITER %d (ph%d): %s ---", iteration["id"], phase, iteration["name"])
+        iteration_name = iteration.get("name", "unknown")
+        
+        logger.info("\n" + "="*60)
+        logger.info("ITERATION %d (Phase %d): %s", iteration["id"], phase, iteration_name)
+        logger.info("="*60)
 
         result = IterationResult(
             iteration_id=iteration["id"], phase=phase,
@@ -509,6 +542,7 @@ class Orchestrator:
                     for future in as_completed(future_to_task):
                         tr = future.result()
                         result.task_results.append(tr)
+                        self._log_task_result(tr)
                         if not tr.approved:
                             all_ok = False
             else:
@@ -516,6 +550,7 @@ class Orchestrator:
                 for task in tasks:
                     tr = self._run_task(task, iteration["id"])
                     result.task_results.append(tr)
+                    self._log_task_result(tr)
                     if not tr.approved:
                         all_ok = False
 
@@ -545,6 +580,8 @@ class Orchestrator:
                 logger.warning("  [reviewer] %s", s)
 
         result.duration_s = round(time.time() - start, 1)
+        status = "✓ APPROVED" if result.approved else "✗ REJECTED"
+        logger.info("\n  %s Iteration %d completed in %.1fs\n", status, iteration["id"], result.duration_s)
         return result
 
     # ── Task dispatch ─────────────────────────────────────────────────────────
@@ -552,6 +589,11 @@ class Orchestrator:
     def _run_task(self, task: dict, iteration_id: int) -> TaskResult:
         start     = time.time()
         agent_key = task.get("agent", "backend_dev")
+        task_name = task.get("name", "unknown")
+        
+        # Log agent activity
+        logger.info("\n  ➤ [%s] Working on: %s", agent_key.upper(), task_name)
+        
         if agent_key == "test_dev":
             return self._run_test_dev(task, iteration_id, start)
         return self._run_worker(task, agent_key, iteration_id, start)
@@ -600,6 +642,14 @@ class Orchestrator:
                           approved=approved, attempts=attempt,
                           final_verdict="APPROVED" if approved else "REWORK",
                           duration_s=round(time.time() - start, 1))
+        
+    def _log_task_result(self, result: TaskResult):
+        """Log task completion status."""
+        status = "✓" if result.approved else "✗"
+        duration = f"{result.duration_s:.1f}s"
+        attempts = f"({result.attempts} attempt{'s' if result.attempts > 1 else ''})"
+        logger.info("  %s [%s] %s — %s %s", 
+                   status, result.agent.upper(), result.final_verdict, duration, attempts)
 
     # ── CI/CD ─────────────────────────────────────────────────────────────────
 

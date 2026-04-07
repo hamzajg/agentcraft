@@ -219,6 +219,11 @@ def cmd_build(args):
             else logging.NullHandler(),
         ],
     )
+    
+    # Suppress noisy HTTP request logs from httpx
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    
     (ROOT / ".ai").mkdir(exist_ok=True)
 
     from core.orchestrator import Orchestrator
@@ -311,21 +316,51 @@ def cmd_bootstrap(args):
 
     # Start comms server early - keep it running throughout the entire build
     comms_process = None
-    print("  Starting comms server for agent collaboration...")
-    import subprocess
-    import time
-    try:
-        comms_process = subprocess.Popen([
-            sys.executable, "-m", "uvicorn", "comms.main:app", 
-            f"--port={7000}", "--log-level=warning"
-        ], cwd=str(ROOT))
-        # Wait for server to start
-        time.sleep(3)
-        print("  Comms server ready at http://localhost:7000")
-        print("  Open the URL above to collaborate with agents during bootstrap.")
-    except Exception as e:
-        print(f"  Warning: Could not start comms server: {e}")
-        print("  You can start it manually: python agentcraft comms")
+    comms_port = 7000
+    
+    # Check if comms server is already running
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    comms_already_running = sock.connect_ex(('localhost', comms_port)) == 0
+    sock.close()
+    
+    if comms_already_running:
+        print(f"  Comms server already running on port {comms_port}")
+        print(f"  Using existing server at http://localhost:{comms_port}")
+    else:
+        print("  Starting comms server for agent collaboration...")
+        import subprocess
+        import time
+        import signal
+        try:
+            comms_process = subprocess.Popen([
+                sys.executable, "-m", "uvicorn", "comms.main:app", 
+                f"--port={comms_port}", "--log-level=warning"
+            ], cwd=str(ROOT))
+            # Wait for server to start
+            time.sleep(3)
+            print(f"  Comms server ready at http://localhost:{comms_port}")
+            print("  Open the URL above to collaborate with agents during bootstrap.")
+            
+            # Register cleanup handler
+            def cleanup_comms(signum, frame):
+                print("\n  Stopping comms server...")
+                if comms_process:
+                    comms_process.terminate()
+                    try:
+                        comms_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        comms_process.kill()
+                        comms_process.wait()
+                    print("  Comms server stopped.")
+                sys.exit(0)
+            
+            signal.signal(signal.SIGINT, cleanup_comms)
+            signal.signal(signal.SIGTERM, cleanup_comms)
+            
+        except Exception as e:
+            print(f"  Warning: Could not start comms server: {e}")
+            print(f"  You can start it manually: python agentcraft comms --port {comms_port}")
 
     import logging
     logging.basicConfig(
@@ -338,6 +373,11 @@ def cmd_bootstrap(args):
             else logging.NullHandler(),
         ],
     )
+    
+    # Suppress noisy HTTP request logs from httpx (must be done early)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    
     (ROOT / ".ai").mkdir(exist_ok=True)
 
     from core.orchestrator import Orchestrator
@@ -388,14 +428,22 @@ def cmd_bootstrap(args):
     
     # Keep comms server running for a moment, then clean up
     if comms_process:
-        print("\n  Comms server still running at http://localhost:7000")
+        print(f"\n  Comms server still running at http://localhost:{comms_port}")
         print("  You can continue collaborating or press Ctrl+C to stop.")
         try:
             comms_process.wait()  # Wait for manual termination
         except KeyboardInterrupt:
-            print("  Stopping comms server...")
+            print("\n  Stopping comms server...")
             comms_process.terminate()
-            comms_process.wait()
+            try:
+                comms_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                comms_process.kill()
+                comms_process.wait()
+            print("  Comms server stopped.")
+    elif comms_already_running:
+        print(f"\n  Comms server still running at http://localhost:{comms_port}")
+        print("  (Started before this session - not managed by this process)")
 
 
 # ── comms ─────────────────────────────────────────────────────────────────────
@@ -409,6 +457,16 @@ def cmd_comms(args):
 
     comms_dir = ROOT / "comms"
     port = args.port or 7000
+    
+    # Check if already running
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sock.connect_ex(('localhost', port)) == 0:
+        print(f"  Comms server already running on port {port}")
+        print(f"  Open: http://localhost:{port}")
+        sock.close()
+        return
+    sock.close()
 
     if args.build_ui:
         print("Building React UI...")
@@ -420,6 +478,63 @@ def cmd_comms(args):
          "--reload" if args.dev else "--workers=1"],
         cwd=str(ROOT),
     )
+
+
+def cmd_comms_stop(args):
+    """Stop any running comms server."""
+    import socket
+    import subprocess
+    
+    port = args.port or 7000
+    
+    # Check if something is running on the port
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sock.connect_ex(('localhost', port)) != 0:
+        print(f"  No comms server running on port {port}")
+        sock.close()
+        return
+    sock.close()
+    
+    print(f"  Stopping comms server on port {port}...")
+    
+    # Find and kill the process
+    try:
+        # Try to find uvicorn process on this port
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                pid = pid.strip()
+                if pid:
+                    try:
+                        subprocess.run(["kill", pid], timeout=3)
+                        print(f"  Stopped process {pid}")
+                    except Exception as e:
+                        print(f"  Failed to stop {pid}: {e}")
+            print(f"  Comms server on port {port} stopped.")
+        else:
+            # Fallback: try to kill by process name
+            result = subprocess.run(
+                ["pkill", "-f", f"uvicorn.*comms.main.*--port={port}"],
+                timeout=5
+            )
+            if result.returncode == 0:
+                print(f"  Comms server on port {port} stopped.")
+            else:
+                print(f"  Could not find comms server process.")
+                print(f"  You may need to manually kill the process on port {port}")
+    except FileNotFoundError:
+        print("  Error: lsof or pkill not found.")
+        print(f"  Please manually kill the process using port {port}")
+        print(f"  Run: lsof -ti :{port} | xargs kill")
+    except Exception as e:
+        print(f"  Error stopping comms server: {e}")
 
 
 # ── chat ───────────────────────────────────────────────────────────────────
@@ -767,6 +882,11 @@ def main():
     p.add_argument("--dev",      action="store_true", help="Hot-reload mode")
     p.add_argument("--build-ui", action="store_true", help="Rebuild React frontend first")
     p.set_defaults(func=cmd_comms)
+    
+    # ── comms-stop ────────────────────────────────────────────────────────────
+    p = subs.add_parser("comms-stop", help="Stop any running comms server")
+    p.add_argument("--port", type=int, default=7000)
+    p.set_defaults(func=cmd_comms_stop)
 
     # ── chat ──────────────────────────────────────────────────────────────────
     global chat_parser

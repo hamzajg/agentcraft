@@ -58,21 +58,46 @@ class SpecAgent(AiderAgent):
 
         # ── Step 1: extract key entities — small, fast ────────────────────────
         entities_file = ai_dir / "entities.md"
-        self.run(
+        
+        # Remove file if it exists (might be empty from previous failed run)
+        if entities_file.exists():
+            entities_file.unlink()
+        
+        result1 = self.run(
             message=(
-                "Read the docs. List the main entities (nouns) this system works with.\n"
-                "Format: one entity per line, with 1-sentence description.\n"
-                "Max 10 entities. No code. No headers."
+                f"Read the docs. List the main entities (nouns) this system works with.\n"
+                f"Format: one entity per line, with 1-sentence description.\n"
+                f"Max 10 entities. No code. No headers.\n"
+                f"\n"
+                f"CREATE the file '{entities_file.name}' and write the entity list to it."
             ),
             read_files=doc_files,
-            edit_files=[entities_file],
-            timeout=90,
+            edit_files=[entities_file],  # Will only be added to CLI if exists
+            log_callback=self.log_callback,
         )
+        
+        # Check if file was actually written
+        success = result1.get("success", False)
+        file_exists = entities_file.exists()
+        file_size = entities_file.stat().st_size if file_exists else 0
+        
+        logger.info("[spec] step 1 result: success=%s, file_exists=%s, size=%d", 
+                   success, file_exists, file_size)
+        
+        if not success:
+            logger.error("[spec] step 1 failed - aider exit code: %d", result1.get("exit_code", -1))
+            logger.error("[spec] stderr: %s", result1.get("stderr", "")[:200])
+        
+        if not file_exists or file_size == 0:
+            logger.error("[spec] step 1 failed - entities.md is empty or not created")
+            if file_exists:
+                entities_file.unlink()  # Remove empty file
+            return None, None
 
         # ── Step 2: write spec.md — bounded by entity list ────────────────────
-        context = doc_files + ([entities_file] if entities_file.exists() else [])
+        context = doc_files + [entities_file]
         logger.info("[spec] step 2/3 — write spec.md")
-        self.run(
+        result2 = self.run(
             message=(
                 "Write spec.md for this project.\n\n"
                 "Include exactly these sections:\n"
@@ -84,13 +109,20 @@ class SpecAgent(AiderAgent):
             ),
             read_files=context,
             edit_files=[spec_file],
-            timeout=120,
+            log_callback=self.log_callback,
         )
+        
+        # Check if file was actually written
+        if not result2.get("success") or not spec_file.exists() or spec_file.stat().st_size == 0:
+            logger.error("[spec] step 2 failed - spec.md is empty or not created")
+            if spec_file.exists():
+                spec_file.unlink()  # Remove empty file
+            return None, None
 
         # ── Step 3: write 3 use cases ─────────────────────────────────────────
-        context2 = context + ([spec_file] if spec_file.exists() else [])
+        context2 = context + [spec_file]
         logger.info("[spec] step 3/3 — write use cases")
-        self.run(
+        result3 = self.run(
             message=(
                 "Write use_cases.md with the 3 most important use cases.\n\n"
                 "Each use case:\n"
@@ -103,8 +135,15 @@ class SpecAgent(AiderAgent):
             ),
             read_files=context2,
             edit_files=[use_cases_file],
-            timeout=90,
+            log_callback=self.log_callback,
         )
+        
+        # Check if file was actually written
+        if not result3.get("success") or not use_cases_file.exists() or use_cases_file.stat().st_size == 0:
+            logger.error("[spec] step 3 failed - use_cases.md is empty or not created")
+            if use_cases_file.exists():
+                use_cases_file.unlink()  # Remove empty file
+            return None, None
 
         logger.info("[spec] done — spec.md + use_cases.md")
         return spec_file, use_cases_file

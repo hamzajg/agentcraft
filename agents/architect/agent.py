@@ -135,12 +135,20 @@ class ArchitectAgent(AiderAgent):
         # ── Step 1: Phase 1 iterations ────────────────────────────────────────
         logger.info("[architect] planning Phase 1 (core logic)")
         phase1_file = ai_dir / "phase1.json"
-        self.run(
+        result1 = self.run(
             message=self._phase_prompt(1, next_id, architecture),
             read_files=ctx,
             edit_files=[phase1_file],
-            timeout=120,
+            log_callback=self.log_callback,
         )
+        
+        # Validate file was created
+        if not result1.get("success") or not phase1_file.exists() or phase1_file.stat().st_size == 0:
+            logger.error("[architect] Phase 1 planning failed - phase1.json is empty")
+            if phase1_file.exists():
+                phase1_file.unlink()
+            return []
+        
         phase1 = self.read_json(phase1_file, [])
         phase1 = self._renumber(phase1, next_id, phase=1)
         all_iterations.extend(phase1)
@@ -149,13 +157,21 @@ class ArchitectAgent(AiderAgent):
         # ── Step 2: Phase 2 iterations ────────────────────────────────────────
         logger.info("[architect] planning Phase 2 (API layer)")
         phase2_file = ai_dir / "phase2.json"
-        ctx2 = ctx + ([phase1_file] if phase1_file.exists() else [])
-        self.run(
+        ctx2 = ctx + [phase1_file]
+        result2 = self.run(
             message=self._phase_prompt(2, next_id, architecture),
             read_files=ctx2,
             edit_files=[phase2_file],
-            timeout=120,
+            log_callback=self.log_callback,
         )
+        
+        # Validate file was created
+        if not result2.get("success") or not phase2_file.exists() or phase2_file.stat().st_size == 0:
+            logger.error("[architect] Phase 2 planning failed - phase2.json is empty")
+            if phase2_file.exists():
+                phase2_file.unlink()
+            return all_iterations  # Return what we have so far
+        
         phase2 = self.read_json(phase2_file, [])
         phase2 = self._renumber(phase2, next_id, phase=2)
         all_iterations.extend(phase2)
@@ -164,15 +180,20 @@ class ArchitectAgent(AiderAgent):
         # ── Step 3: Phase 3 (infra — minimal, often just 1 iteration) ─────────
         logger.info("[architect] planning Phase 3 (infra)")
         phase3_file = ai_dir / "phase3.json"
-        self.run(
+        result3 = self.run(
             message=self._phase_prompt(3, next_id, architecture),
             read_files=ctx,
             edit_files=[phase3_file],
-            timeout=90,
+            log_callback=self.log_callback,
         )
-        phase3 = self.read_json(phase3_file, [])
-        phase3 = self._renumber(phase3, next_id, phase=3)
-        all_iterations.extend(phase3)
+        
+        # Validate file was created (Phase 3 is optional)
+        if result3.get("success") and phase3_file.exists() and phase3_file.stat().st_size > 0:
+            phase3 = self.read_json(phase3_file, [])
+            phase3 = self._renumber(phase3, next_id, phase=3)
+            all_iterations.extend(phase3)
+        else:
+            logger.warning("[architect] Phase 3 planning failed or empty - skipping")
 
         if not all_iterations:
             logger.error("[architect] produced no iterations")
@@ -252,7 +273,9 @@ class ArchitectAgent(AiderAgent):
         Handle queries from other agents via AgentBus.
         Specifically handles phase 0 clarification requests from supervisor.
         """
+        logger.info("[architect] ===== handle_query invoked via AgentBus =====")
         logger.info("[architect] received query from agent bus: %s", question[:80])
+        logger.info("[architect] context keys: %s", list(context.keys()) if context else "none")
         
         # Check if this is a phase 0 clarification request
         if "phase 0" in question.lower() or "clarification" in question.lower():
@@ -262,6 +285,7 @@ class ArchitectAgent(AiderAgent):
             suggestions = clarification_plan.get("suggestions", [])
             
             logger.info("[architect] handling phase 0 clarification request")
+            logger.info("[architect] will ask user via comms system")
             
             # Ask user for clarification
             user_response = self.request_clarification(
@@ -271,14 +295,19 @@ class ArchitectAgent(AiderAgent):
             )
             
             if user_response:
+                logger.info("[architect] user responded, broadcasting to bus")
                 # Broadcast that architect has gathered user input
                 self.broadcast("architect.clarification_received", {
                     "response_length": len(user_response),
-                    "task_id": context.get("task_id", "unknown")
+                    "task_id": context.get("task_id", "unknown"),
+                    "preview": user_response[:100]
                 })
+            else:
+                logger.warning("[architect] no user response received")
             
             return user_response
         
+        logger.info("[architect] query not phase 0 related, using default LLM handler")
         # Default: use parent class handler (local LLM)
         return super().handle_query(question, context)
 

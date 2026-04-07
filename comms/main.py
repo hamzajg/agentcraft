@@ -620,3 +620,68 @@ async def api_bus_thread(agent_a: str, agent_b: str):
     if not bus:
         return []
     return bus.messages_between(agent_a, agent_b)
+
+
+@app.post("/api/bus/message")
+async def api_bus_receive_message(message: dict):
+    """
+    Receive an AgentBus message from the orchestrator process.
+    This allows the comms server to display agent-to-agent communication
+    even when running in a separate process.
+    """
+    from core.bus import BusMessage, MsgType
+    from datetime import datetime
+    
+    bus = _get_bus()
+    if not bus:
+        return {"status": "error", "message": "AgentBus not initialized"}
+    
+    try:
+        # Reconstruct the BusMessage
+        msg = BusMessage(
+            id=message["id"],
+            type=MsgType(message["type"]),
+            from_agent=message["from_agent"],
+            to_agent=message.get("to_agent"),
+            content=message["content"],
+            ref_id=message.get("ref_id"),
+            ts=message.get("ts", datetime.utcnow().timestamp()),
+            task_id=message.get("task_id"),
+            iteration_id=message.get("iteration_id"),
+        )
+        
+        # Mark as from comms to prevent re-forwarding loop
+        msg._from_comms = True
+        
+        # Record it in the local bus
+        bus._record(msg)
+        
+        # Also push to WebSocket clients
+        event_map = {
+            MsgType.QUERY: "agent_query",
+            MsgType.REPLY: "agent_reply",
+            MsgType.CONTEXT: "agent_context",
+            MsgType.DELEGATE: "agent_delegate",
+            MsgType.BROADCAST: "agent_broadcast",
+        }
+        
+        ws_event = event_map.get(msg.type, "agent_bus_message")
+        
+        # Broadcast via WebSocket
+        import asyncio
+        async def _push():
+            await manager.broadcast({"event": ws_event, "payload": msg.to_dict()})
+        
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(_push(), loop)
+        except Exception:
+            pass
+        
+        return {"status": "ok"}
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to process bus message: {e}")
+        return {"status": "error", "message": str(e)}

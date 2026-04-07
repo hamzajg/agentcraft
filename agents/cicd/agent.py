@@ -95,7 +95,7 @@ Use .PHONY for all targets.
 Include a MODEL variable defaulting to qwen2.5-coder:7b.
 """
         logger.info("[cicd] writing Makefile")
-        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=120)
+        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=120, log_callback=self.log_callback)
         r["file"] = "Makefile"
         return [r]
 
@@ -127,7 +127,7 @@ Stage 2 (runtime):
 Include .dockerignore as a comment at the bottom noting what to exclude.
 """
         logger.info("[cicd] writing Dockerfile")
-        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180)
+        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180, log_callback=self.log_callback)
         r["file"] = "api-gateway/Dockerfile"
         return [r]
 
@@ -168,7 +168,7 @@ Use version: "3.9".
 Include restart: unless-stopped on all services.
 """
         logger.info("[cicd] writing docker-compose.yml")
-        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180)
+        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180, log_callback=self.log_callback)
         r["file"] = "docker-compose.yml"
         return [r]
 
@@ -212,7 +212,7 @@ lint:
 Use concurrency to cancel in-progress runs on new push.
 """
         logger.info("[cicd] writing ci.yml")
-        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180)
+        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180, log_callback=self.log_callback)
         r["file"] = ".github/workflows/ci.yml"
         return [r]
 
@@ -235,6 +235,6 @@ Jobs:
     - Create GitHub release with changelog from git log
 """
         logger.info("[cicd] writing release.yml")
-        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180)
+        r = self.run(message=message, read_files=read_files, edit_files=[target], timeout=180, log_callback=self.log_callback)
         r["file"] = ".github/workflows/release.yml"
         return [r]

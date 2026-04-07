@@ -92,9 +92,15 @@ class AiderAgent:
             # Auto-register handle_query if subclass overrides it
             if (hasattr(self.__class__, "handle_query")
                     and "handle_query" in self.__class__.__dict__):
+                logger.info("[bus] auto-registering handler for '%s'", self.role)
                 bus.register_handler(self.role, self.handle_query)
-        except Exception:
-            pass  # Bus is optional
+            else:
+                logger.info("[bus] no handle_query override in '%s' (hasattr=%s, in_dict=%s)", 
+                           self.role, 
+                           hasattr(self.__class__, "handle_query"),
+                           "handle_query" in self.__class__.__dict__)
+        except Exception as e:
+            logger.warning("[bus] failed to register agent '%s': %s", self.role, e)
 
     # ── Query handler (override in subclasses) ────────────────────────────────
 
@@ -306,17 +312,38 @@ class AiderAgent:
 
     # ── Aider execution ───────────────────────────────────────────────────────
 
+    def _build_aider_commands(self, message: str, read_files: list, edit_files: list, custom_commands: list = None) -> str:
+        """
+        Build message for aider. We rely on --read and --file CLI flags instead of slash commands.
+        
+        Returns the message to send to aider.
+        """
+        # Just return the message - file handling is done via CLI flags
+        if self.system_prompt:
+            return f"{self.system_prompt}\n\n{message}"
+        return message
+
     def run(
         self,
         message: str,
         read_files: list = None,
         edit_files: list = None,
-        timeout: int = 300,
+        timeout: int = None,  # Will be set based on model
         rag_query: str = None,      # if set, retrieve context before running
         log_callback: callable = None,  # callback(agent_id: str, message: str)
+        aider_commands: list = None,  # Custom aider slash commands to prepend
     ) -> dict:
         read_files = list(read_files or [])
         edit_files = list(edit_files or [])
+
+        # Set timeout based on model size (7B models need more time on low-perf hardware)
+        if timeout is None:
+            if "7b" in self.model.lower():
+                timeout = 300  # 5 minutes for 7B models
+            elif "13b" in self.model.lower():
+                timeout = 480  # 8 minutes for 13B models
+            else:
+                timeout = 180  # 3 minutes default
 
         # Layer 3: declared skills
         skill_files = self._skill_runner.resolve(self.skills)
@@ -331,22 +358,26 @@ class AiderAgent:
         # Order: skills → RAG → explicit read_files
         all_reads = skill_files + rag_files + read_files
 
-        full_message = f"{self.system_prompt}\n\n{message}" if self.system_prompt else message
+        # Build message with aider commands for better context management
+        full_message = self._build_aider_commands(message, all_reads, edit_files, aider_commands)
 
         cmd = [
             "aider",
             "--model", f"ollama/{self.model}",
             "--no-git", "--yes",
+            "--verbose",  # Enable verbose output to see LLM chat
+            "--stream",   # Force streaming mode
             "--message", full_message,
         ]
         for f in all_reads:
             cmd += ["--read", str(f)]
+        # Always add --file for edit_files (aider needs this to know what to create/edit)
         for f in edit_files:
             cmd += ["--file", str(f)]
 
         self.report_status("running")
-        logger.info("[%s] run (skills=%s, rag=%d): %s",
-                    self.role, self.skills, len(rag_files), message[:80])
+        logger.info("[%s] run (skills=%s, rag=%d, timeout=%ds): %s",
+                    self.role, self.skills, len(rag_files), timeout, message[:80])
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -369,8 +400,12 @@ class AiderAgent:
 
                 stdout_thread = threading.Thread(target=read_stream, args=(proc.stdout, stdout_lines, 'stdout'))
                 stderr_thread = threading.Thread(target=read_stream, args=(proc.stderr, stderr_lines, 'stderr'))
+                stdout_thread.daemon = True  # Don't block on exit
+                stderr_thread.daemon = True
                 stdout_thread.start()
                 stderr_thread.start()
+                
+                logger.info("[%s] aider process started, waiting for completion...", self.role)
 
                 try:
                     proc.wait(timeout=timeout)

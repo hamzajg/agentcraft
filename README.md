@@ -92,7 +92,7 @@ python agentcraft <command> [options]
 | `diagnose` | Detect CPU/RAM/GPU, select optimal Ollama models |
 | `build` | Build agents, check violations, setup workspace (fast) |
 | `bootstrap` | Run agent workflow, keep alive, print logs (long-running) |
-| `resume --from N` | Resume from iteration N after interruption |
+| `resume --from N` | Manually resume from iteration N (optional) |
 | `comms` | Start human↔agent chat UI |
 | `chat <agent>` | Chat with a specific agent via CLI |
 | `monitor` | Live system metrics (CPU, RAM, GPU, agent status) |
@@ -110,6 +110,34 @@ python agentcraft build --phase 1 --dry-run
 ```
 
 **Empty docs behavior:** If `docs/` is empty, `build` performs a "phase 0 bootstrap" that loads all agents and infrastructure, then stops. Use `comms` or `chat <agent>` to collaborate with agents on creating documentation and specifications before starting the full build process.
+
+### Auto-Resume
+
+**Automatic continuation:** AgentCraft automatically detects incomplete runs and resumes from where it left off.
+
+```bash
+# First run - builds iterations 1-10
+agentcraft bootstrap
+
+# Interrupted at iteration 7 (CTRL+C)
+
+# Second run - automatically resumes from iteration 8
+agentcraft bootstrap
+# Output: [AUTO-RESUME] Detected previous run - last completed: iteration 7
+# Output: [AUTO-RESUME] Resuming from iteration 8
+```
+
+**Manual override:** Use `--from N` to start from a specific iteration:
+```bash
+agentcraft bootstrap --from 5  # Skip iterations 1-4
+```
+
+**What's preserved:**
+- ✓ Completed iterations (not re-run)
+- ✓ Generated code files
+- ✓ Phase CI/CD infrastructure
+- ✓ RAG indexes
+- ✓ Run logs
 
 ---
 

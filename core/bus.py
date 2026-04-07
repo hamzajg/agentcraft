@@ -34,12 +34,15 @@ import logging
 import threading
 import time
 import uuid
+import os
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+COMMS_URL = os.getenv("COMMS_SERVER_URL", "http://localhost:7000")
 
 
 # ── Message types ──────────────────────────────────────────────────────────────
@@ -121,6 +124,7 @@ class AgentBus:
         with self._mu:
             self._handlers[role] = fn
         logger.debug("[bus] handler registered: %s", role)
+        logger.info("[bus] all registered handlers: %s", list(self._handlers.keys()))
 
     def set_ws_push(self, fn: Callable):
         """Injected by the comms server to push events to the UI."""
@@ -160,13 +164,18 @@ class AgentBus:
 
         # Try registered handler
         handler = self._handlers.get(to_role)
+        logger.info("[bus] looking for handler for '%s': %s", to_role, "FOUND" if handler else "NOT FOUND")
         if handler:
             try:
+                logger.info("[bus] calling handler for '%s'", to_role)
                 answer = handler(question, ctx)
+                logger.info("[bus] handler for '%s' returned %d chars", to_role, len(answer) if answer else 0)
                 self._record_reply(qmsg, from_role, to_role, answer, task_id, iter_id)
                 return answer
             except Exception as e:
                 logger.warning("[bus] handler for %s raised: %s", to_role, e)
+                import traceback
+                logger.warning("[bus] handler exception traceback:\n%s", traceback.format_exc())
 
         # Try local LLM fallback
         if fallback_llm:
@@ -323,7 +332,31 @@ class AgentBus:
     def _record(self, msg: BusMessage) -> BusMessage:
         with self._mu:
             self._messages.append(msg)
+        
+        # Forward to comms server if running in separate process
+        # But only if this message originated locally (not from comms server)
+        if not getattr(msg, '_from_comms', False):
+            self._forward_to_comms(msg)
+        
         return msg
+    
+    def _forward_to_comms(self, msg: BusMessage):
+        """Forward bus message to comms server via HTTP."""
+        try:
+            import httpx
+            msg_dict = msg.to_dict()
+            # Run in background thread to avoid blocking
+            def _post():
+                try:
+                    with httpx.Client(timeout=2) as client:
+                        client.post(f"{COMMS_URL}/api/bus/message", json=msg_dict)
+                except Exception as e:
+                    logger.debug("[bus] failed to forward message to comms: %s", e)
+            
+            thread = threading.Thread(target=_post, daemon=True)
+            thread.start()
+        except Exception as e:
+            logger.debug("[bus] failed to forward message to comms: %s", e)
 
     def _push_ws(self, event: str, payload: dict):
         if self._ws_push_fn:
