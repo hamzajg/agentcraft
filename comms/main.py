@@ -1151,3 +1151,14 @@ async def control_gates(body: dict):
         raise HTTPException(status_code=503, detail="No build running")
     cc.set_approval_gates(bool(body.get("enabled", True)))
     return {"approval_gates_enabled": bool(body.get("enabled", True))}
+
+
+# ── SPA Catch-all ─────────────────────────────────────────────────────────────
+# Serve index.html for any non-API route (enables React Router SPA routing)
+
+@app.get("/{path:path}")
+async def serve_spa(path: str):
+    """Serve index.html for SPA routes."""
+    if path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+    return FileResponse(STATIC_DIR / "index.html")
