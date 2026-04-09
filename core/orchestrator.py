@@ -210,7 +210,10 @@ class Orchestrator:
     def _supervisor_status(self, message: str):
         """Post status message from supervisor to chat."""
         try:
-            self.supervisor.info(message)
+            if hasattr(self, 'supervisor') and self.supervisor:
+                self.supervisor.info(message)
+            else:
+                self._comms.info(message)
         except Exception as e:
             logger.warning("[orchestrator] supervisor status failed: %s", e)
 

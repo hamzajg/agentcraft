@@ -898,7 +898,7 @@ async def workspace_paths():
         "docs": {
             "path": str(paths["docs"].relative_to(paths["root"])),
             "exists": paths["docs"].exists(),
-            "label": "Documentation",
+            "label": "Docs",
             "description": "Project requirements, architecture, and design docs",
         },
         "workflow": {
@@ -910,7 +910,7 @@ async def workspace_paths():
         "project": {
             "path": str(paths["output"].relative_to(paths["root"])),
             "exists": paths["output"].exists(),
-            "label": "Generated Project",
+            "label": "Project",
             "description": "Source code and generated artifacts",
         },
     }
