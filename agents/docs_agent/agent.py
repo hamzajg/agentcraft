@@ -31,10 +31,9 @@ class DocsAgent(AiderAgent):
             role="docs_agent",
             model=model,
             workspace=workspace,
-            system_prompt=SYSTEM_PROMPT if system_prompt is None else system_prompt,
-            skills=skills,
+            system_prompt=system_prompt or SYSTEM_PROMPT,
+            skills=skills or ["technical-writing", "requirements-analysis", "architecture-design"],
             framework_id=framework_id,
-            max_retries=2,
             task_id=task_id,
             iteration_id=iteration_id,
             rag_client=rag_client,
@@ -72,6 +71,275 @@ Rules:
             read_files=read_files,
             edit_files=[target_file],
             timeout=120,
+            log_callback=self.log_callback,
+        )
+
+    def generate_phase0_docs(
+        self,
+        user_input: str,
+        docs_dir: Path,
+        architecture: str = "monolith",
+    ) -> dict[str, Path]:
+        """
+        Generate Phase 0 documentation from user input using AI.
+        
+        Args:
+            user_input: Raw user description of what they want to build
+            docs_dir: Directory to write docs to
+            architecture: Target architecture style (monolith, microservices, etc.)
+            
+        Returns:
+            Dict mapping doc name -> Path of generated files
+        """
+        self.report_status("running")
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        generated = {}
+
+        # Step 1: Generate Requirements
+        requirements_path = docs_dir / "requirements.md"
+        self._generate_requirements(user_input, architecture, requirements_path)
+        generated["requirements"] = requirements_path
+        self.emit_file_written(requirements_path)
+
+        # Step 2: Generate Architecture
+        architecture_path = docs_dir / "architecture.md"
+        self._generate_architecture(user_input, architecture, architecture_path, [requirements_path])
+        generated["architecture"] = architecture_path
+        self.emit_file_written(architecture_path)
+
+        # Step 3: Generate Blueprint
+        blueprint_path = docs_dir / "blueprint.md"
+        self._generate_blueprint(user_input, architecture, blueprint_path, [requirements_path, architecture_path])
+        generated["blueprint"] = blueprint_path
+        self.emit_file_written(blueprint_path)
+
+        self.share_context("phase0_docs_generated", {
+            "requirements": str(requirements_path),
+            "architecture": str(architecture_path),
+            "blueprint": str(blueprint_path),
+        })
+
+        self.report_status("idle")
+        logger.info("[docs_agent] Phase 0: generated %d documentation files", len(generated))
+        return generated
+
+    def _generate_requirements(self, user_input: str, architecture: str, output_path: Path) -> None:
+        """Generate comprehensive requirements document."""
+        logger.info("[docs_agent] generating requirements.md")
+
+        prompt = f"""Write requirements.md for this project.
+
+## User's Vision
+{user_input}
+
+## Target Architecture
+{architecture}
+
+## Task
+Create a comprehensive requirements document with these sections:
+
+### Project Overview
+- Problem statement (what pain point does this solve?)
+- Target users (who will use this?)
+- Core value proposition (why would someone use this?)
+
+### Functional Requirements
+For each major feature:
+- **FR-###**: The system SHALL [behavior]. Include concrete examples.
+- Focus on user-visible behavior, not implementation
+
+### Non-Functional Requirements
+- **Performance**: Response times, throughput, resource usage
+- **Scalability**: Expected load, growth patterns
+- **Reliability**: Availability targets, error handling
+- **Security**: Authentication, authorization, data protection
+- **Maintainability**: Code standards, documentation needs
+
+### User Stories
+Write 3-5 key user stories in format:
+As a [user type], I want [goal] so that [benefit].
+
+### Out of Scope
+Explicitly state what is NOT included in MVP.
+
+### Constraints
+- Technical constraints (languages, frameworks, existing systems)
+- Business constraints (budget, timeline, compliance)
+
+Write this for an AI development team. Be precise but concise."""
+
+        self.run(
+            message=prompt,
+            read_files=[],
+            edit_files=[output_path],
+            timeout=180,
+            log_callback=self.log_callback,
+        )
+
+    def _generate_architecture(
+        self,
+        user_input: str,
+        architecture: str,
+        output_path: Path,
+        context: list[Path],
+    ) -> None:
+        """Generate architecture document."""
+        logger.info("[docs_agent] generating architecture.md")
+
+        arch_specific = {
+            "monolith": """
+### Monolith Considerations
+- Modular structure within single application
+- Shared database with clear module boundaries
+- Internal API patterns between modules
+- Deployment as single unit""",
+            "microservices": """
+### Microservice Considerations  
+- Service boundaries and responsibilities
+- Inter-service communication patterns (sync/async)
+- API gateway and service discovery
+- Data ownership per service""",
+        }.get(architecture.lower(), "")
+
+        prompt = f"""Write architecture.md for this project.
+
+## User's Vision
+{user_input}
+
+## Target Architecture
+{architecture}
+
+{arch_specific}
+
+## Task
+Create an architecture document with these sections:
+
+### Architecture Style
+- Overall pattern ({architecture})
+- Key characteristics and trade-offs made
+
+### System Components
+For each major component:
+- **Component name**: Responsibility, boundaries
+- Dependencies on other components
+
+### Data Architecture
+- Data model overview (key entities)
+- Storage strategy (databases, caches)
+- Data flow between components
+
+### API Design (if applicable)
+- Internal API patterns
+- Request/response formats
+- Error handling approach
+
+### Technology Stack
+- Languages and frameworks per component
+- Key libraries and their purposes
+- Development tools
+
+### Design Patterns
+- Architectural patterns in use
+- Key design decisions and rationale
+
+### Security Architecture
+- Authentication approach
+- Authorization model
+- Data protection measures
+
+Write this for an AI development team. Make it actionable."""
+
+        self.run(
+            message=prompt,
+            read_files=context,
+            edit_files=[output_path],
+            timeout=180,
+            log_callback=self.log_callback,
+        )
+
+    def _generate_blueprint(
+        self,
+        user_input: str,
+        architecture: str,
+        output_path: Path,
+        context: list[Path],
+    ) -> None:
+        """Generate project blueprint document."""
+        logger.info("[docs_agent] generating blueprint.md")
+
+        phase_templates = {
+            "monolith": """
+### Phase 1: Core Foundation
+- Domain models and business logic
+- Internal module structure
+- Basic CLI or API interface
+
+### Phase 2: API Layer  
+- HTTP endpoints
+- Request validation
+- Response formatting
+
+### Phase 3: Infrastructure
+- Configuration management
+- Error handling and logging
+- Deployment setup""",
+            "microservices": """
+### Phase 1: Service Boundaries
+- Identify and define service interfaces
+- Core domain models per service
+- Inter-service communication setup
+
+### Phase 2: Service Implementation
+- Implement each service
+- API gateway
+- Service discovery
+
+### Phase 3: Infrastructure
+- Container orchestration
+- Monitoring and observability
+- CI/CD pipeline""",
+        }.get(architecture.lower(), "")
+
+        prompt = f"""Write blueprint.md for this project.
+
+## User's Vision
+{user_input}
+
+## Task
+Create a project blueprint with these sections:
+
+### Project Summary
+- One paragraph describing the project
+- Key success criteria
+
+### Development Phases
+{phase_templates}
+
+### Project Structure
+Recommended directory/file structure for the codebase.
+
+### Key Milestones
+- Milestone 1: [What ships in first iteration]
+- Milestone 2: [What ships in second iteration]
+- Milestone 3: [What ships in final iteration]
+
+### Definition of Done
+What constitutes "complete" for each phase:
+- Code compiles and passes tests
+- Documentation updated
+- Review approved
+
+### Risks and Mitigations
+- Key technical risks
+- Mitigation strategies
+
+This guides the AI agent team's work. Make phases clear and actionable."""
+
+        self.run(
+            message=prompt,
+            read_files=context,
+            edit_files=[output_path],
+            timeout=180,
             log_callback=self.log_callback,
         )
 
@@ -118,7 +386,7 @@ Keep it concise but complete.
 """
         self.run(
             message=message,
-            read_files=legacy_files[:20],  # Show first 20 files as examples
+            read_files=legacy_files[:20],
             edit_files=[arch_file],
             timeout=180,
             log_callback=self.log_callback,

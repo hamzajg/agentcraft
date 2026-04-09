@@ -411,96 +411,10 @@ Guidelines:
             "next_phase": None
         }
 
-    def decide_phase_0(self, project_type: str, workspace: dict) -> dict:
-        """
-        Decide Phase 0 strategy based on project type (legacy vs greenfield) and architecture style.
-        
-        Returns: {
-            "strategy": "legacy_scan" | "greenfield_clarify",
-            "action": str,
-            "agents_involved": list[str],
-            "next_steps": list[str],
-            "architecture_notes": list[str]
-        }
-        """
-        architecture = workspace.get("project", {}).get("architecture", "monolith")
-        
-        if project_type == "legacy":
-            strategy = {
-                "strategy": "legacy_scan",
-                "action": "Scan existing codebase and generate reference documentation",
-                "agents_involved": ["docs_agent"],
-                "next_steps": [
-                    "Scan legacy source code with provided source paths",
-                    "Index existing code in RAG system",
-                    "Extract domain concepts and architecture from code",
-                    "Generate reference docs (architecture.md, domain-model.md)",
-                    "Create API spec from existing endpoints",
-                    "Proceed to Phase 1 with code as context"
-                ],
-                "architecture_notes": []
-            }
-            
-            # Add architecture-specific notes
-            if architecture == "microservice":
-                strategy["architecture_notes"] = [
-                    "Identify existing service boundaries and API contracts",
-                    "Document inter-service communication patterns",
-                    "Note service-specific technologies and frameworks",
-                    "Assess current deployment and orchestration setup"
-                ]
-            else:  # monolith
-                strategy["architecture_notes"] = [
-                    "Document monolithic application structure",
-                    "Identify internal module boundaries and dependencies",
-                    "Note shared components and utilities",
-                    "Assess current deployment approach"
-                ]
-                
-            return strategy
-            
-        else:  # greenfield
-            strategy = {
-                "strategy": "greenfield_clarify",
-                "action": "Supervisor defines phase 0 plan and collaborates with architect for clarification",
-                "agents_involved": ["supervisor", "architect"],
-                "next_steps": [
-                    "Supervisor creates phase 0 clarification plan",
-                    "Architect asks user for project vision via comms UI",
-                    "Generate blueprint.md from user input",
-                    "Generate requirements.md with features",
-                    "Generate architecture.md with design approach",
-                    "User approves specs through comms collaboration",
-                    "Proceed to Phase 1 execution"
-                ],
-                "architecture_notes": []
-            }
-            
-            # Add architecture-specific guidance
-            if architecture == "microservice":
-                strategy["architecture_notes"] = [
-                    "Clarify service boundaries and domain decomposition",
-                    "Define API contracts between services",
-                    "Specify technology stack per service",
-                    "Plan for service discovery and communication",
-                    "Consider deployment orchestration (Kubernetes, Docker Compose)",
-                    "Address cross-cutting concerns (auth, logging, monitoring)"
-                ]
-            else:  # monolith
-                strategy["architecture_notes"] = [
-                    "Define high-level module structure",
-                    "Specify technology stack for the application",
-                    "Plan for internal API design",
-                    "Consider deployment strategy (single container/app)",
-                    "Address scalability and maintainability concerns"
-                ]
-                
-            return strategy
-
     def execute_phase_0_plan(self, architect_agent, workspace: dict) -> bool:
         """
-        Execute Phase 0 plan: define clarification questions and let architect ask user.
-        Uses AgentBus for inter-agent communication.
+        Execute Phase 0 plan: gather user requirements and generate AI-powered documentation.
+        Uses DocGeneratorAgent for dynamic doc generation.
         
         Args:
             architect_agent: ArchitectAgent instance to use for clarification
@@ -514,56 +428,148 @@ Guidelines:
         architecture = workspace.get("project", {}).get("architecture", "monolith")
         docs_dir = Path(workspace.get("docs_dir", "docs"))
         docs_dir.mkdir(parents=True, exist_ok=True)
+        workspace_path = Path(workspace.get("path", "."))
         
         self.report_status("running")
         self._log(f"Executing phase 0 plan for {architecture} architecture")
         logger.info("[supervisor] executing phase 0 plan for %s architecture", architecture)
         self.info(f"Executing phase 0 plan for {architecture} architecture")
         
-        # Define clarification plan
+        # Load model from workspace config or default
+        model = workspace.get("project", {}).get("model", "anthropic/claude-3-5-sonnet-20241022")
+        
+        # Initialize the doc generator agent
+        doc_gen = self._init_doc_generator(model, workspace_path)
+        if not doc_gen:
+            self._log("Failed to initialize doc generator - falling back to basic doc generation")
+            return self._execute_phase_0_fallback(architect_agent, workspace)
+        
+        # Gather user input via architect
+        user_input = self._gather_user_input(architect_agent, architecture)
+        if not user_input:
+            self._log("No user response received")
+            logger.warning("[supervisor] no user response received via architect")
+            self.share_context("supervisor.phase0_plan", {
+                "architecture": architecture,
+                "status": "failed",
+                "reason": "no user response"
+            })
+            self.report_status("idle")
+            return False
+        
+        self._log(f"Received user response: {user_input[:100]}...")
+        logger.info("[supervisor] received user response via architect: %s", user_input[:100])
+        
+        # Check for existing docs to reference
+        existing_docs = list(docs_dir.glob("*.md"))
+        
+        # Generate comprehensive documentation using AI
+        self._log("Generating comprehensive Phase 0 documentation with AI")
+        logger.info("[supervisor] generating phase 0 documentation with AI")
+        self.info("Generating comprehensive documentation from your input...")
+        
+        try:
+            generated_docs = doc_gen.generate_phase0_docs(
+                user_input=user_input,
+                docs_dir=docs_dir,
+                architecture=architecture,
+            )
+            
+            if generated_docs:
+                self._log(f"Generated {len(generated_docs)} documentation files")
+                logger.info("[supervisor] generated %d documentation files", len(generated_docs))
+                
+                # Share on bus
+                for doc_name, doc_path in generated_docs.items():
+                    self.emit_file_written(doc_path)
+                    self.share_context(f"supervisor.phase0_{doc_name}", {
+                        "path": str(doc_path),
+                        "summary": f"{doc_name.title()} generated from user input.",
+                    })
+                
+                self.share_context("supervisor.phase0_plan", {
+                    "architecture": architecture,
+                    "status": "completed",
+                    "docs_generated": {k: str(v) for k, v in generated_docs.items()},
+                })
+                
+                # Broadcast completion
+                self.broadcast("phase0_completed", {
+                    "docs_generated": [str(v) for v in generated_docs.values()],
+                    "architecture": architecture,
+                    "next_step": "architect_planning"
+                })
+                
+                self._log("Phase 0 documentation complete - AI generated")
+                logger.info("[supervisor] phase 0 documentation complete")
+                self.complete("Phase 0 documentation complete - AI generated", file=str(generated_docs.get("blueprint", docs_dir / "blueprint.md")))
+                self.report_status("idle")
+                return True
+            else:
+                self._log("Doc generator returned no files - falling back to basic generation")
+                return self._execute_phase_0_fallback(architect_agent, workspace)
+                
+        except Exception as e:
+            self._log(f"Doc generation failed: {e} - falling back to basic generation")
+            logger.error("[supervisor] doc generation error: %s", e)
+            return self._execute_phase_0_fallback(architect_agent, workspace)
+
+    def _init_doc_generator(self, model: str, workspace_path: Path):
+        """Initialize the DocsAgent for Phase 0 doc generation."""
+        try:
+            from agents.docs_agent.agent import DocsAgent
+            
+            return DocsAgent(
+                model=model,
+                workspace=workspace_path,
+                rag_client=self.rag_client,
+                llm_client=self.llm_client,
+            )
+        except ImportError as e:
+            logger.warning("[supervisor] could not import DocsAgent: %s", e)
+            return None
+        except Exception as e:
+            logger.error("[supervisor] failed to initialize DocsAgent: %s", e)
+            return None
+
+    def _gather_user_input(self, architect_agent, architecture: str) -> str:
+        """Gather user input via AgentBus communication."""
         clarification_plan = {
             "primary_question": """
-I'm the Architect agent working with the Supervisor to plan your project. The Supervisor has asked me to gather some information about what you'd like to build.
+I'm the Architect agent working with the Supervisor to plan your project. To create a proper development plan, I need to understand your project vision.
 
-To create a proper development plan, I need to understand your project vision. Please tell me:
+Please describe what you'd like to build:
 
 1. **What is your project about?** (e.g., "a task management web app", "an AI chatbot platform", "a data analytics dashboard")
 
 2. **What are the main features/goals?** (e.g., "users can create and assign tasks", "integrate with external APIs")
 
-3. **Any technical preferences?** (e.g., "React frontend", "Python backend", "microservices architecture")
+3. **Any technical preferences?** (e.g., "React frontend", "Python backend", "PostgreSQL database")
 
 Your answers will help me create comprehensive documentation and a detailed development plan.
 """,
             "suggestions": [
-                "I want to create a web application for task management",
-                "Help me plan a microservice-based platform",
-                "I need a simple monolithic application with REST APIs",
-                "I already have documentation ready - please check docs/ directory"
+                "I want to create a web application for task management with user authentication",
+                "Help me plan a microservice-based platform for order processing",
+                "I need a simple monolithic application with REST APIs and PostgreSQL",
             ]
         }
         
-        # Share the clarification plan on the bus
         self.share_context("supervisor.phase0_plan", {
             "architecture": architecture,
             "clarification_plan": clarification_plan,
-            "status": "initiated"
+            "status": "gathering_input"
         })
         
-        # Broadcast phase 0 initiation
         self.broadcast("phase0_started", {
             "strategy": "greenfield_clarify",
             "architecture": architecture,
-            "agents_involved": ["supervisor", "architect"]
+            "agents_involved": ["supervisor", "architect", "doc_generator"]
         })
         
-        # Ask architect to gather user clarification via AgentBus
-        self._log("Requesting architect to gather user clarification via AgentBus")
-        logger.info("[supervisor] ===== about to call ask_agent on AgentBus =====")
-        logger.info("[supervisor] asking architect to gather user clarification")
         clarification_request = f"""
-Phase 0 Clarification Request from Supervisor
-==============================================
+Phase 0 Clarification Request
+=============================
 
 Architecture: {architecture}
 
@@ -577,7 +583,6 @@ Suggested answers to offer:
 Return the user's exact response.
 """
         
-        logger.info("[supervisor] calling self.ask_agent(target_role='architect', ...)")
         user_response = self.ask_agent(
             target_role="architect",
             question=clarification_request,
@@ -587,121 +592,110 @@ Return the user's exact response.
                 "clarification_plan": clarification_plan
             }
         )
-        logger.info("[supervisor] ask_agent returned, response length: %d", len(user_response) if user_response else 0)
         
-        if not user_response:
-            self._log("No user response received")
-            logger.warning("[supervisor] no user response received via architect")
-            self.share_context("supervisor.phase0_plan", {
-                "architecture": architecture,
-                "status": "failed",
-                "reason": "no user response"
-            })
-            self.report_status("idle")
+        return user_response
+
+    def _execute_phase_0_fallback(self, architect_agent, workspace: dict) -> bool:
+        """
+        Fallback Phase 0 execution using basic template generation.
+        Used when DocGeneratorAgent is not available.
+        """
+        from pathlib import Path
+        
+        architecture = workspace.get("project", {}).get("architecture", "monolith")
+        docs_dir = Path(workspace.get("docs_dir", "docs"))
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        
+        self._log("Using fallback basic documentation generation")
+        self.info("Generating basic documentation...")
+        
+        # Gather user input
+        user_input = self._gather_user_input(architect_agent, architecture)
+        if not user_input:
+            self._log("No user response - cannot generate docs")
             return False
         
-        self._log(f"Received user response: {user_response[:100]}")
-        logger.info("[supervisor] received user response via architect: %s", user_response[:100])
-        
-        # Generate initial documentation from user response
-        self._log("Generating phase 0 documentation")
-        logger.info("[supervisor] generating phase 0 documentation from user response")
+        # Basic doc generation with templates
+        blueprint_path = docs_dir / "blueprint.md"
+        requirements_path = docs_dir / "requirements.md"
+        architecture_path = docs_dir / "architecture.md"
         
         # Create blueprint.md
-        blueprint_path = docs_dir / "blueprint.md"
-        blueprint_content = f"""# Project Blueprint
+        blueprint_path.write_text(f"""# Project Blueprint
 
 ## User's Vision
-{user_response}
+{user_input}
 
 ## Project Structure
 Based on your description, here's the planned structure:
 
 ### Development Phases
 1. **Phase 1: Core Models** - Define data models and domain entities
-2. **Phase 2: API Foundation** - Build base API endpoints and services  
-3. **Phase 3: Integration** - Add features and integrations
-4. **Phase 4: Polish** - Testing, documentation, deployment prep
+2. **Phase 2: API Foundation** - Build base API endpoints and services
+3. **Phase 3: Infrastructure** - Add configuration, testing, and deployment
 
 ## Architecture Style
 {architecture.title()} architecture
 
 ## Next Steps
 The agents will now analyze this vision and create detailed iteration plans.
-Review and adjust these in your docs/ directory if needed.
-"""
-        blueprint_path.write_text(blueprint_content)
-        self._log(f"Created {blueprint_path}")
-        logger.info("[supervisor] created %s", blueprint_path)
+Review and adjust these documents in your docs/ directory if needed.
+""")
         self.emit_file_written(blueprint_path)
         
-        # Share on bus
-        self.share_context("supervisor.phase0_blueprint", {
-            "path": str(blueprint_path),
-            "vision": user_response,
-            "architecture": architecture,
-            "summary": "Initial project blueprint generated from user guidance.",
-        })
+        # Create requirements.md
+        requirements_path.write_text(f"""# Requirements
+
+## Project Vision
+{user_input}
+
+## Functional Requirements
+- Define the key features needed for the first MVP
+- Capture the user's main problem and desired outcomes
+- Clarify technical preferences and targeted architecture
+
+## Non-functional Requirements
+- Maintainable and testable code
+- Clear architecture guidance for the implementation team
+- Production-ready deployment and infrastructure patterns
+""")
+        self.emit_file_written(requirements_path)
+        
+        # Create architecture.md
+        architecture_path.write_text(f"""# Architecture Overview
+
+## Architecture Style
+{architecture.title()} architecture
+
+## Design Goals
+- Align with the user's vision and feature set
+- Provide a clear development path for the AI agents
+- Preserve modularity, maintainability, and deployment readiness
+
+## Initial Architecture Notes
+- The project will start with a core domain model and API foundation.
+- The Supervisor and Architect agents will refine and expand this as planning continues.
+- The next phase will produce iteration plans and implementation details.
+""")
+        self.emit_file_written(architecture_path)
         
         self.share_context("supervisor.phase0_plan", {
             "architecture": architecture,
             "status": "completed",
-            "blueprint_path": str(blueprint_path)
+            "blueprint_path": str(blueprint_path),
+            "requirements_path": str(requirements_path),
+            "architecture_path": str(architecture_path),
         })
         
-        # Broadcast completion
         self.broadcast("phase0_completed", {
-            "docs_generated": [str(blueprint_path)],
+            "docs_generated": [str(blueprint_path), str(requirements_path), str(architecture_path)],
             "architecture": architecture,
             "next_step": "architect_planning"
         })
         
-        self._log("Phase 0 documentation complete")
-        logger.info("[supervisor] phase 0 documentation complete")
         self.complete("Phase 0 documentation complete", file=str(blueprint_path))
         self.report_status("idle")
         return True
-
-    def decide_agent_assignment(self, iteration: dict, architecture: str) -> str:
-        """
-        Decide which agent should handle an iteration based on architecture style.
-        
-        Args:
-            iteration: Iteration dict with name, description, etc.
-            architecture: "monolith" or "microservice"
-            
-        Returns: Agent name ("backend_dev", "config_agent", etc.)
-        """
-        iteration_name = iteration.get("name", "").lower()
-        description = iteration.get("description", "").lower()
-        
-        # Architecture-specific agent assignments
-        if architecture == "microservice":
-            # For microservices, prefer specialized agents for service-related work
-            if any(keyword in iteration_name + description for keyword in 
-                  ["api", "gateway", "service", "microservice", "endpoint"]):
-                return "backend_dev"  # Could be specialized service agent
-                
-            if any(keyword in iteration_name + description for keyword in
-                  ["docker", "compose", "kubernetes", "deployment", "orchestration"]):
-                return "config_agent"
-                
-            if any(keyword in iteration_name + description for keyword in
-                  ["monitoring", "logging", "tracing", "observability"]):
-                return "config_agent"
-                
-        else:  # monolith
-            # For monoliths, standard agent assignments
-            if any(keyword in iteration_name + description for keyword in
-                  ["database", "model", "entity", "schema"]):
-                return "backend_dev"
-                
-            if any(keyword in iteration_name + description for keyword in
-                  ["config", "deployment", "infrastructure"]):
-                return "config_agent"
-        
-        # Default assignment
-        return iteration.get("agent", "backend_dev")
 
     def decide_service_architecture(self, services: list[dict], architecture: str) -> dict:
         """

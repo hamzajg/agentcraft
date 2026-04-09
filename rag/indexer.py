@@ -10,6 +10,7 @@ Thread-safe: LanceDB writes are synchronous; call from any thread.
 
 import hashlib
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -18,7 +19,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
+OLLAMA_BASE      = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+OLLAMA_EMBED_URL = f"{OLLAMA_BASE}/api/embeddings"
 EMBED_MODEL      = "nomic-embed-text"
 BATCH_SIZE       = 16   # chunks per embedding request
 

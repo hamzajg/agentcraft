@@ -159,24 +159,84 @@ class Orchestrator:
             logger.warning("Failed to load architecture: %s", e)
         return "monolith"
 
-    def _send_log(self, agent_id: str, message: str):
-        """Send log to comms server in background thread (non-blocking)."""
-        import os
-        comms_url = os.environ.get("COMMS_SERVER_URL", "http://localhost:7000")
-        
-        def _post():
+    def _log(self, message: str):
+        """Send log message to comms server if callback is set."""
+        if self.log_callback:
             try:
-                self.log_client.post(
-                    f"{comms_url}/api/log",
-                    json={"agent_id": agent_id, "message": message},
-                    timeout=2
-                )
-            except Exception as e:
-                logger.debug("Failed to send log (timeout/connection): %s", e)
+                self.log_callback("orchestrator", message)
+            except Exception:
+                pass
+        logger.info("[orchestrator] %s", message)
+
+    def _send_log(self, agent_id: str, message: str):
+        """Send log message to comms server."""
+        try:
+            import os
+            comms_url = os.environ.get("COMMS_SERVER_URL", "http://localhost:7000")
+            with httpx.Client(timeout=5) as client:
+                resp = client.post(f"{comms_url}/api/log", json={
+                    "agent_id": agent_id,
+                    "message": message,
+                })
+                resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[orchestrator] failed to send log to comms: %s", e)
+
+    def _docs_exist(self) -> bool:
+        """Check if docs directory has any files."""
+        docs_dir = self.workspace.parent / "docs"
+        if not docs_dir.exists():
+            return False
+        return any(docs_dir.iterdir())
+
+    def _confirm_architecture_session(self) -> bool:
+        """Use LLM to decide if architecture session is needed."""
+        docs_exist = self._docs_exist()
         
-        # Fire HTTP in background thread to avoid blocking log collection
-        t = threading.Thread(target=_post, daemon=True)
-        t.start()
+        prompt = f"""You are the Orchestrator deciding if an architecture session is needed.
+
+Current state:
+- Docs exist: {docs_exist}
+- Workspace: {self.workspace}
+
+Do we need to start an architecture collaboration session?
+
+Consider:
+1. If docs are missing or insufficient, we need a session to define the project
+2. If docs exist and seem complete, we can skip the session
+3. Architecture session involves Supervisor and Architect gathering vision and generating docs
+
+Respond with JSON:
+{{
+  "need_session": true/false,
+  "reason": "brief explanation"
+}}"""
+
+        try:
+            # Use LLM to decide
+            result = {"output": self._llm.generate(prompt=prompt)}
+            
+            # Parse JSON response
+            import json
+            import re
+            output = result.get("output", "")
+            json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
+            if json_match:
+                decision = json.loads(json_match.group(1))
+            else:
+                decision = json.loads(output)
+            
+            need_session = decision.get("need_session", not docs_exist)  # fallback to docs_exist
+            reason = decision.get("reason", "")
+            
+            self._log(f"LLM decision on architecture session: {'needed' if need_session else 'not needed'} - {reason}")
+            
+            return need_session
+            
+        except Exception as e:
+            self._log(f"LLM decision failed: {e}, falling back to docs check")
+            logger.warning("[orchestrator] LLM arch session decision failed: %s", e)
+            return not docs_exist  # fallback
 
     # ── Agent factory ─────────────────────────────────────────────────────────
 
@@ -263,9 +323,73 @@ class Orchestrator:
             project_type = ws.get("project", {}).get("type", "greenfield")
             architecture = ws.get("project", {}).get("architecture", "monolith")
             
-            # Supervisor decides phase 0 strategy
-            phase_0_decision = self.supervisor.decide_phase_0(project_type, {"workspace": str(self.workspace), "project": {"architecture": architecture}})
-            logger.info("[orchestrator] phase 0 strategy: %s", phase_0_decision["strategy"])
+            # Confirm with the human before starting the architecture session
+            if self.start_from == 1 and not self._confirm_architecture_session():
+                logger.info("[orchestrator] architecture session postponed by user")
+                self.run_log.completed = True
+                self.run_log.total_duration_s = round(time.time() - total_start, 1)
+                self._save_log()
+                self._banner("ARCHITECTURE SESSION POSTPONED")
+                return self.run_log
+            
+            # Use LLM to decide phase 0 strategy
+            phase_0_prompt = f"""You are the Orchestrator deciding Phase 0 strategy.
+
+Project details:
+- Project type: {project_type}
+- Architecture: {architecture}
+- Workspace: {self.workspace}
+
+Decide the Phase 0 strategy based on project type.
+
+For legacy projects: scan existing codebase and generate reference docs.
+For greenfield projects: collaborate with user to define vision and generate initial docs.
+
+Respond with JSON matching this structure:
+{{
+  "strategy": "legacy_scan" or "greenfield_clarify",
+  "action": "brief description",
+  "agents_involved": ["supervisor", "architect", ...],
+  "next_steps": ["step1", "step2", ...],
+  "architecture_notes": ["note1", "note2", ...]
+}}"""
+
+            try:
+                result = {"output": self._llm.generate(prompt=phase_0_prompt)}
+                
+                # Parse response
+                import json
+                import re
+                output = result.get("output", "")
+                json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
+                if json_match:
+                    phase_0_decision = json.loads(json_match.group(1))
+                else:
+                    phase_0_decision = json.loads(output)
+                
+                self._log(f"LLM decided phase 0 strategy: {phase_0_decision.get('strategy')}")
+                
+            except Exception as e:
+                self._log(f"LLM phase 0 decision failed: {e}, using fallback")
+                logger.warning("[orchestrator] LLM phase 0 decision failed: %s", e)
+                
+                # Fallback based on project_type
+                if project_type == "legacy":
+                    phase_0_decision = {
+                        "strategy": "legacy_scan",
+                        "action": "Scan existing codebase and generate reference documentation",
+                        "agents_involved": ["docs_agent"],
+                        "next_steps": ["Scan legacy source", "Index in RAG", "Generate reference docs"],
+                        "architecture_notes": []
+                    }
+                else:
+                    phase_0_decision = {
+                        "strategy": "greenfield_clarify",
+                        "action": "Supervisor defines phase 0 plan and collaborates with architect for clarification",
+                        "agents_involved": ["supervisor", "architect"],
+                        "next_steps": ["Define clarification plan", "Architect asks user", "Generate docs"],
+                        "architecture_notes": []
+                    }
             
             if self.start_from == 1:
                 self._banner("PHASE 0 — COLLABORATION")
@@ -599,7 +723,45 @@ class Orchestrator:
             # Apply architecture-aware agent assignments
             for task in tasks:
                 original_agent = task.get("agent", "backend_dev")
-                architecture_agent = self.supervisor.decide_agent_assignment(task, self.architecture)
+                # Use LLM to decide agent assignment
+                agent_prompt = f"""You are the Orchestrator assigning an agent for this task.
+
+Task: {task}
+Architecture: {self.architecture}
+
+Available agents: backend_dev, test_dev, reviewer, integration_test, cicd, config_agent, docs_agent
+
+Choose the most appropriate agent based on:
+1. Task type (database, API, testing, deployment, etc.)
+2. Architecture style (monolith vs microservice)
+3. Agent specialization
+
+Respond with JSON:
+{{
+  "agent": "agent_name",
+  "reason": "brief explanation"
+}}"""
+
+                try:
+                    result = {"output": self._llm.generate(prompt=agent_prompt)}
+                    
+                    # Parse response
+                    import json
+                    import re
+                    output = result.get("output", "")
+                    json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
+                    if json_match:
+                        decision = json.loads(json_match.group(1))
+                    else:
+                        decision = json.loads(output)
+                    
+                    architecture_agent = decision.get("agent", task.get("agent", "backend_dev"))
+                    self._log(f"LLM assigned agent: {architecture_agent} for task {task.get('name', '')}")
+                    
+                except Exception as e:
+                    self._log(f"LLM agent assignment failed: {e}, using default")
+                    logger.warning("[orchestrator] LLM agent assignment failed: %s", e)
+                    architecture_agent = task.get("agent", "backend_dev")  # fallback
                 if architecture_agent != original_agent:
                     logger.info("[orchestrator] architecture override: %s -> %s for task '%s'", 
                               original_agent, architecture_agent, task.get("name", ""))

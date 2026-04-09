@@ -55,56 +55,382 @@ class ArchitectAgent(AiderAgent):
         elif architecture == "monolith":
             arch_note = "\nARCHITECTURE: Monolith - Plan for modular structure within single application."
         
+        # Read project context to generate specific iterations
+        project_context = self._read_project_context()
+        
         PHASE_DESC = {
             1: (
                 "Phase 1 — core logic only.\n"
                 "NO Spring web, NO HTTP, NO external calls, NO file persistence.\n"
-                "Only: domain model, business logic, in-memory data, interfaces."
+                "Only: domain model, business logic, in-memory data, interfaces.\n"
+                "For this Java CLI calculator project, focus on:\n"
+                "- Operation enum (ADD, SUBTRACT, MULTIPLY, DIVIDE)\n"
+                "- Calculator core logic with arithmetic operations\n"
+                "- In-memory calculation history tracking"
                 f"{arch_note}"
             ),
             2: (
-                "Phase 2 — API layer.\n"
-                "Spring Boot controllers, HTTP routes, wire real implementations.\n"
-                "Reads Phase 1 files as context."
+                "Phase 2 — CLI layer.\n"
+                "Command-line interface, input parsing, output formatting.\n"
+                "For this calculator project, focus on:\n"
+                "- CLI input parsing (e.g., 'ADD 5 3')\n"
+                "- Interactive command loop\n"
+                "- History display functionality\n"
+                "- Error handling for invalid input"
                 f"{arch_note}"
             ),
             3: (
                 "Phase 3 — infrastructure only.\n"
-                "Dockerfile, docker-compose, CI pipeline.\n"
-                "Usually 1 iteration is enough."
+                "Dockerfile, build configuration, CI pipeline.\n"
+                "For this Java project, focus on:\n"
+                "- Maven/Gradle build configuration\n"
+                "- Docker containerization\n"
+                "- CI/CD pipeline for automated testing and deployment"
                 f"{arch_note}"
             ),
         }
+        
+        # Analyze project context to generate appropriate examples
+        project_context = self._read_project_context()
+        
+        # Determine project type and generate appropriate examples
+        is_java_cli = "Java" in project_context and "CLI" in project_context
+        is_calculator = "calculator" in project_context.lower()
+        
+        if is_java_cli and is_calculator:
+            # Use the specific calculator examples
+            examples = self._get_calculator_examples(phase, start_id)
+        else:
+            # Generate generic examples based on project type
+            examples = self._get_generic_examples(phase, start_id, project_context)
+        
+        example_json = json.dumps(examples, indent=2)
+        
         return (
-            f"Plan the iterations for {PHASE_DESC[phase]}\n\n"
+            f"Based on the project configuration and available documentation, plan concrete iterations for {PHASE_DESC[phase]}\n\n"
+            f"Project Context: {project_context}\n\n"
             f"Start iteration IDs from {start_id}.\n"
-            f"Each iteration: 2-4 files max. Simple goal. Clear files_expected.\n\n"
-            "Output ONLY valid JSON array:\n"
-            "[\n"
-            "  {\n"
-            f'    "id": {start_id},\n'
-            f'    "phase": {phase},\n'
-            '    "name": "short name",\n'
-            '    "goal": "one sentence",\n'
-            '    "layer": "model",\n'
-            '    "files_expected": ["path/to/File.java"],\n'
-            '    "depends_on": [],\n'
-            '    "acceptance_criteria": ["compiles"]\n'
-            "  }\n"
-            "]"
+            f"Each iteration should be 2-4 files max, with a clear, specific goal.\n"
+            f"CRITICAL: Generate REAL, ACTIONABLE iterations specific to this project.\n"
+            f"Do NOT use generic templates like 'short name' or 'path/to/File.java'.\n"
+            f"Adapt to the project's technology stack and requirements.\n\n"
+            f"Here are concrete examples for Phase {phase}:\n"
+            f"{example_json}\n\n"
+            f"Output ONLY a valid JSON array of iterations for Phase {phase}:\n"
         )
 
-    def _load_architecture(self) -> str:
-        """Load architecture style from workspace.yaml."""
-        try:
-            ws_file = self.workspace.parent / "workspace.yaml"
-            if ws_file.exists():
+    def _read_project_context(self) -> str:
+        """Read project configuration and generated content to provide context for planning."""
+        context_parts = []
+        
+        # 1. First read workspace.yaml for initial project configuration
+        workspace_yaml = self.workspace.parent / "workspace.yaml"
+        if workspace_yaml.exists():
+            try:
                 import yaml
-                ws = yaml.safe_load(ws_file.read_text()) or {}
-                return ws.get("project", {}).get("architecture", "monolith")
-        except Exception as e:
-            logger.warning("Failed to load architecture from workspace.yaml: %s", e)
-        return "monolith"
+                ws_config = yaml.safe_load(workspace_yaml.read_text()) or {}
+                project_info = ws_config.get("project", {})
+                
+                context_parts.append(f"Project: {project_info.get('name', 'Unknown')}")
+                context_parts.append(f"Description: {project_info.get('description', 'No description')}")
+                context_parts.append(f"Type: {project_info.get('type', 'Unknown')}")
+                context_parts.append(f"Architecture: {project_info.get('architecture', 'Unknown')}")
+                
+                # Include output layout expectations
+                output_layout = ws_config.get("output_layout", [])
+                if output_layout:
+                    layout_desc = [f"- {item.get('path', '')}: {item.get('description', '')}" for item in output_layout]
+                    context_parts.append(f"Expected Output Layout:\n" + "\n".join(layout_desc))
+                    
+            except Exception as e:
+                logger.warning(f"Failed to read workspace.yaml: {e}")
+        
+        # 2. Then read .ai content if it exists (generated during workflow)
+        ai_dir = self.workspace / ".ai"
+        
+        # Read spec.md
+        spec_file = ai_dir / "spec.md"
+        if spec_file.exists():
+            spec_content = spec_file.read_text()
+            context_parts.append(f"Specification: {spec_content[:500]}...")  # First 500 chars
+        
+        # Read use_cases.md
+        use_cases_file = ai_dir / "use_cases.md"
+        if use_cases_file.exists():
+            use_cases_content = use_cases_file.read_text()
+            context_parts.append(f"Use Cases: {use_cases_content[:500]}...")  # First 500 chars
+            
+        # Read entities.md if it exists
+        entities_file = ai_dir / "entities.md"
+        if entities_file.exists():
+            entities_content = entities_file.read_text()
+            context_parts.append(f"Entities: {entities_content[:300]}...")  # First 300 chars
+        
+        if not context_parts:
+            return "No project context available. Please ensure workspace.yaml exists with project configuration."
+        
+        return " | ".join(context_parts)
+
+    def _get_calculator_examples(self, phase: int, start_id: int) -> list:
+        """Get specific examples for Java CLI calculator project."""
+        examples = {
+            1: [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Operation Types & Enum",
+                    "goal": "Define arithmetic operations (ADD, SUBTRACT, MULTIPLY, DIVIDE) as enum",
+                    "layer": "model",
+                    "files_expected": ["src/main/java/com/example/Operation.java"],
+                    "depends_on": [],
+                    "acceptance_criteria": ["Operation enum compiles", "Has ADD, SUBTRACT, MULTIPLY, DIVIDE values", "Each operation has toString() method"]
+                },
+                {
+                    "id": start_id + 1,
+                    "phase": phase,
+                    "name": "Calculator Core Logic",
+                    "goal": "Implement calculator with arithmetic operations and error handling",
+                    "layer": "model",
+                    "files_expected": ["src/main/java/com/example/Calculator.java"],
+                    "depends_on": [start_id],
+                    "acceptance_criteria": ["Calculator class compiles", "calculate() method works for all operations", "Division by zero throws appropriate exception"]
+                },
+                {
+                    "id": start_id + 2,
+                    "phase": phase,
+                    "name": "Calculation History",
+                    "goal": "Implement in-memory history tracking for past calculations",
+                    "layer": "model",
+                    "files_expected": ["src/main/java/com/example/CalculationResult.java", "src/main/java/com/example/History.java"],
+                    "depends_on": [start_id + 1],
+                    "acceptance_criteria": ["CalculationResult stores operation, operands, result", "History maintains list of results", "History has add() and getAll() methods"]
+                }
+            ],
+            2: [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "CLI Input Parser",
+                    "goal": "Parse command-line input like 'ADD 5 3' into operation and operands",
+                    "layer": "cli",
+                    "files_expected": ["src/main/java/com/example/InputParser.java"],
+                    "depends_on": [start_id - 2],  # Depends on Operation enum
+                    "acceptance_criteria": ["Parses 'OPERATION operand1 operand2' format", "Validates numeric operands", "Rejects invalid operations", "Returns Operation and double[]"]
+                },
+                {
+                    "id": start_id + 1,
+                    "phase": phase,
+                    "name": "Interactive CLI Application",
+                    "goal": "Build main CLI loop that integrates parser, calculator, and history",
+                    "layer": "cli",
+                    "files_expected": ["src/main/java/com/example/Main.java"],
+                    "depends_on": [start_id, start_id + 1, start_id + 2],  # Depends on parser, calculator, history
+                    "acceptance_criteria": ["Reads from stdin in loop", "Displays results after calculations", "'HISTORY' command shows past results", "'EXIT' command terminates gracefully"]
+                }
+            ],
+            3: [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Build Configuration & Docker",
+                    "goal": "Create Maven pom.xml and Dockerfile for containerized deployment",
+                    "layer": "ops",
+                    "files_expected": ["pom.xml", "Dockerfile"],
+                    "depends_on": [start_id - 3],  # Depends on main application
+                    "acceptance_criteria": ["pom.xml compiles project successfully", "Dockerfile builds runnable image", "Container runs calculator CLI", "All dependencies properly configured"]
+                },
+                {
+                    "id": start_id + 1,
+                    "phase": phase,
+                    "name": "CI Pipeline",
+                    "goal": "Setup GitHub Actions for automated build, test, and deployment",
+                    "layer": "ops",
+                    "files_expected": [".github/workflows/ci.yml"],
+                    "depends_on": [start_id],
+                    "acceptance_criteria": ["Pipeline triggers on push/PR", "Runs Maven build and tests", "Builds Docker image", "Fails on compilation errors or test failures"]
+                }
+            ]
+        }
+        return examples.get(phase, [])
+
+    def _get_generic_examples(self, phase: int, start_id: int, project_context: str) -> list:
+        """Get generic examples based on project type and technology stack."""
+        # Analyze project context to determine technology stack
+        is_java = "Java" in project_context or "Maven" in project_context
+        is_python = "Python" in project_context
+        is_web = "web" in project_context.lower() or "api" in project_context.lower()
+        is_cli = "cli" in project_context.lower() or "command" in project_context.lower()
+        
+        if is_java:
+            return self._get_java_examples(phase, start_id, is_web, is_cli)
+        elif is_python:
+            return self._get_python_examples(phase, start_id, is_web, is_cli)
+        else:
+            return self._get_generic_tech_examples(phase, start_id)
+
+    def _get_java_examples(self, phase: int, start_id: int, is_web: bool = False, is_cli: bool = False) -> list:
+        """Get Java-specific examples."""
+        if phase == 1:
+            return [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Core Domain Model",
+                    "goal": "Define core domain classes and business logic",
+                    "layer": "model",
+                    "files_expected": ["src/main/java/com/example/domain/Model.java"],
+                    "depends_on": [],
+                    "acceptance_criteria": ["Domain classes compile successfully", "Business logic is implemented", "Unit tests pass"]
+                },
+                {
+                    "id": start_id + 1,
+                    "phase": phase,
+                    "name": "Data Access Layer",
+                    "goal": "Implement data persistence and repository interfaces",
+                    "layer": "model",
+                    "files_expected": ["src/main/java/com/example/repository/Repository.java"],
+                    "depends_on": [start_id],
+                    "acceptance_criteria": ["Repository interfaces defined", "Data access methods implemented", "Integration tests pass"]
+                }
+            ]
+        elif phase == 2:
+            if is_web:
+                return [
+                    {
+                        "id": start_id,
+                        "phase": phase,
+                        "name": "REST Controllers",
+                        "goal": "Create Spring Boot REST controllers with endpoints",
+                        "layer": "api",
+                        "files_expected": ["src/main/java/com/example/controller/ApiController.java"],
+                        "depends_on": [start_id - 2],
+                        "acceptance_criteria": ["Controllers compile", "Endpoints return correct responses", "HTTP status codes are appropriate"]
+                    }
+                ]
+            else:  # CLI
+                return [
+                    {
+                        "id": start_id,
+                        "phase": phase,
+                        "name": "Command Line Interface",
+                        "goal": "Implement CLI with argument parsing and command handling",
+                        "layer": "cli",
+                        "files_expected": ["src/main/java/com/example/cli/CliApplication.java"],
+                        "depends_on": [start_id - 2],
+                        "acceptance_criteria": ["CLI accepts command arguments", "Commands execute successfully", "Help text is displayed"]
+                    }
+                ]
+        else:  # Phase 3
+            return [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Build & Deployment",
+                    "goal": "Configure Maven build and Docker containerization",
+                    "layer": "ops",
+                    "files_expected": ["pom.xml", "Dockerfile"],
+                    "depends_on": [start_id - 3],
+                    "acceptance_criteria": ["Maven build succeeds", "Docker image builds", "Application runs in container"]
+                }
+            ]
+
+    def _get_python_examples(self, phase: int, start_id: int, is_web: bool = False, is_cli: bool = False) -> list:
+        """Get Python-specific examples."""
+        if phase == 1:
+            return [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Core Models & Logic",
+                    "goal": "Define core data models and business logic classes",
+                    "layer": "model",
+                    "files_expected": ["src/models.py"],
+                    "depends_on": [],
+                    "acceptance_criteria": ["Models are properly defined", "Business logic functions work", "Unit tests pass"]
+                }
+            ]
+        elif phase == 2:
+            if is_web:
+                return [
+                    {
+                        "id": start_id,
+                        "phase": phase,
+                        "name": "FastAPI Routes",
+                        "goal": "Create FastAPI route handlers and endpoints",
+                        "layer": "api",
+                        "files_expected": ["src/routes.py"],
+                        "depends_on": [start_id - 1],
+                        "acceptance_criteria": ["API endpoints respond correctly", "Request/response models work", "Error handling is implemented"]
+                    }
+                ]
+            else:  # CLI
+                return [
+                    {
+                        "id": start_id,
+                        "phase": phase,
+                        "name": "CLI Commands",
+                        "goal": "Implement Click-based CLI commands",
+                        "layer": "cli",
+                        "files_expected": ["src/cli.py"],
+                        "depends_on": [start_id - 1],
+                        "acceptance_criteria": ["CLI commands work", "Arguments are parsed correctly", "Help is displayed"]
+                    }
+                ]
+        else:  # Phase 3
+            return [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Packaging & Deployment",
+                    "goal": "Configure packaging and container deployment",
+                    "layer": "ops",
+                    "files_expected": ["requirements.txt", "Dockerfile"],
+                    "depends_on": [start_id - 2],
+                    "acceptance_criteria": ["Package installs correctly", "Docker container builds", "Application runs in container"]
+                }
+            ]
+
+    def _get_generic_tech_examples(self, phase: int, start_id: int) -> list:
+        """Get generic examples when technology stack is unclear."""
+        if phase == 1:
+            return [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Core Implementation",
+                    "goal": "Implement core functionality and business logic",
+                    "layer": "core",
+                    "files_expected": ["src/core.py"],
+                    "depends_on": [],
+                    "acceptance_criteria": ["Core functionality works", "Business logic is correct", "Basic tests pass"]
+                }
+            ]
+        elif phase == 2:
+            return [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "User Interface",
+                    "goal": "Create user interface for interacting with core functionality",
+                    "layer": "ui",
+                    "files_expected": ["src/ui.py"],
+                    "depends_on": [start_id - 1],
+                    "acceptance_criteria": ["UI accepts user input", "Displays results correctly", "Error handling works"]
+                }
+            ]
+        else:  # Phase 3
+            return [
+                {
+                    "id": start_id,
+                    "phase": phase,
+                    "name": "Build & Deploy",
+                    "goal": "Configure build system and deployment",
+                    "layer": "ops",
+                    "files_expected": ["Dockerfile", "Makefile"],
+                    "depends_on": [start_id - 2],
+                    "acceptance_criteria": ["Build succeeds", "Deployment works", "Application is accessible"]
+                }
+            ]
 
     def plan(self, docs_dir: Path) -> list[dict]:
         self.report_status("running")
@@ -116,19 +442,27 @@ class ArchitectAgent(AiderAgent):
         ai_dir.mkdir(exist_ok=True)
         iterations_file = ai_dir / "iterations.json"
 
-        doc_files = list(docs_dir.glob("*.md"))
-        if not doc_files:
-            logger.info("[architect] no docs found in %s - cannot plan without documentation", docs_dir)
-            logger.info("[architect] supervisor should have initiated phase 0 collaboration")
-            return []
+        # Read docs from provided directory (may be empty initially)
+        doc_files = list(docs_dir.glob("*.md")) if docs_dir.exists() else []
+        logger.info("[architect] reading %d doc files from %s", len(doc_files), docs_dir)
+        
+        # Also check .ai directory for any generated content
+        ai_doc_files = list(ai_dir.glob("*.md"))
+        all_docs = doc_files + ai_doc_files
+        
+        # Even with no docs, we can still plan based on workspace.yaml context
+        if not all_docs:
+            logger.info("[architect] no docs found, but will use workspace.yaml context for planning")
+        
+        logger.info("[architect] total context files: %d (docs: %d, .ai: %d)", 
+                   len(all_docs), len(doc_files), len(ai_doc_files))
 
-        logger.info("[architect] reading %d doc files", len(doc_files))
-        spec_file = ai_dir / "spec.md"
-        ctx = doc_files + ([spec_file] if spec_file.exists() else [])
-
-        if not ctx:
-            logger.error("[architect] no context files found")
-            return []
+        # Clear any existing phase files to ensure fresh generation
+        for phase_num in [1, 2, 3]:
+            phase_file = ai_dir / f"phase{phase_num}.json"
+            if phase_file.exists():
+                phase_file.unlink()
+                logger.info("[architect] cleared existing phase%d.json for fresh generation", phase_num)
 
         all_iterations: list[dict] = []
         next_id = 1
@@ -138,16 +472,14 @@ class ArchitectAgent(AiderAgent):
         phase1_file = ai_dir / "phase1.json"
         result1 = self.run(
             message=self._phase_prompt(1, next_id, architecture),
-            read_files=ctx,
+            read_files=all_docs,  # Include all available context
             edit_files=[phase1_file],
             log_callback=self.log_callback,
         )
         
-        # Validate file was created
-        if not result1.get("success") or not phase1_file.exists() or phase1_file.stat().st_size == 0:
-            logger.error("[architect] Phase 1 planning failed - phase1.json is empty")
-            if phase1_file.exists():
-                phase1_file.unlink()
+        # Try to save phase JSON (handles both file and stdout extraction)
+        if not self._save_phase_json(phase1_file, result1):
+            logger.error("[architect] Phase 1 planning failed - could not extract iterations")
             return []
         
         phase1 = self.read_json(phase1_file, [])
@@ -156,9 +488,9 @@ class ArchitectAgent(AiderAgent):
         next_id += len(phase1)
 
         # ── Step 2: Phase 2 iterations ────────────────────────────────────────
-        logger.info("[architect] planning Phase 2 (API layer)")
+        logger.info("[architect] planning Phase 2 (CLI layer)")
         phase2_file = ai_dir / "phase2.json"
-        ctx2 = ctx + [phase1_file]
+        ctx2 = all_docs + [phase1_file]  # Include phase1 for context
         result2 = self.run(
             message=self._phase_prompt(2, next_id, architecture),
             read_files=ctx2,
@@ -166,30 +498,28 @@ class ArchitectAgent(AiderAgent):
             log_callback=self.log_callback,
         )
         
-        # Validate file was created
-        if not result2.get("success") or not phase2_file.exists() or phase2_file.stat().st_size == 0:
-            logger.error("[architect] Phase 2 planning failed - phase2.json is empty")
-            if phase2_file.exists():
-                phase2_file.unlink()
-            return all_iterations  # Return what we have so far
-        
-        phase2 = self.read_json(phase2_file, [])
-        phase2 = self._renumber(phase2, next_id, phase=2)
-        all_iterations.extend(phase2)
-        next_id += len(phase2)
+        # Try to save phase JSON (handles both file and stdout extraction)
+        if self._save_phase_json(phase2_file, result2):
+            phase2 = self.read_json(phase2_file, [])
+            phase2 = self._renumber(phase2, next_id, phase=2)
+            all_iterations.extend(phase2)
+            next_id += len(phase2)
+        else:
+            logger.warning("[architect] Phase 2 planning failed - continuing with Phase 1 only")
 
-        # ── Step 3: Phase 3 (infra — minimal, often just 1 iteration) ─────────
-        logger.info("[architect] planning Phase 3 (infra)")
+        # ── Step 3: Phase 3 (infrastructure) ────────────────────────────────
+        logger.info("[architect] planning Phase 3 (infrastructure)")
         phase3_file = ai_dir / "phase3.json"
+        ctx3 = all_docs + [phase1_file, phase2_file] if phase2_file.exists() else all_docs + [phase1_file]
         result3 = self.run(
             message=self._phase_prompt(3, next_id, architecture),
-            read_files=ctx,
+            read_files=ctx3,
             edit_files=[phase3_file],
             log_callback=self.log_callback,
         )
         
-        # Validate file was created (Phase 3 is optional)
-        if result3.get("success") and phase3_file.exists() and phase3_file.stat().st_size > 0:
+        # Try to save phase JSON (handles both file and stdout extraction)
+        if self._save_phase_json(phase3_file, result3):
             phase3 = self.read_json(phase3_file, [])
             phase3 = self._renumber(phase3, next_id, phase=3)
             all_iterations.extend(phase3)
@@ -199,6 +529,18 @@ class ArchitectAgent(AiderAgent):
         if not all_iterations:
             logger.error("[architect] produced no iterations")
             return []
+
+        iterations_file.write_text(json.dumps(all_iterations, indent=2))
+        logger.info("[architect] total: %d iterations across 3 phases", len(all_iterations))
+        self.emit_file_written(iterations_file)
+
+        # Post completion update
+        self.complete(f"Planning complete: {len(all_iterations)} iterations across 3 phases", file=str(iterations_file))
+
+        # Share on bus for other agents
+        self.share_context("iteration_plan", all_iterations)
+        self.report_status("idle")
+        return all_iterations
 
         iterations_file.write_text(json.dumps(all_iterations, indent=2))
         logger.info("[architect] total: %d iterations across 3 phases", len(all_iterations))
@@ -228,6 +570,104 @@ class ArchitectAgent(AiderAgent):
         except json.JSONDecodeError as e:
             logger.warning("[architect] JSON parse error in %s: %s", path.name, e)
             return default
+
+    def _extract_json_from_output(self, output: str) -> dict:
+        """
+        Try to extract JSON from LLM output.
+        Handles cases where aider didn't write to file but LLM generated JSON.
+        """
+        import re
+        # Remove markdown code fences
+        output = re.sub(r'```(?:json)?\n?', '', output).strip()
+        
+        # Find JSON array or object
+        for start_ch, end_ch in [('[', ']'), ('{', '}')]:
+            s = output.find(start_ch)
+            if s == -1:
+                continue
+            depth = 0
+            for i, ch in enumerate(output[s:], s):
+                if ch == start_ch:
+                    depth += 1
+                elif ch == end_ch:
+                    depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(output[s:i+1]), True  # (result, is_array)
+                    except json.JSONDecodeError:
+                        continue
+        return None, False
+
+    def _is_template_iteration(self, iteration: dict) -> bool:
+        """Check if iteration is just a template placeholder."""
+        template_markers = [
+            "short name", "one sentence", "path/to/", "File.java",
+            "compiles", "model"
+        ]
+        # Check if too many template markers are present
+        markers_found = sum(1 for marker in template_markers if marker.lower() in str(iteration).lower())
+        return markers_found >= 3
+
+    def _validate_iterations(self, iterations: list) -> bool:
+        """Validate that iterations are real, not templates."""
+        if not iterations:
+            return False
+        
+        # Check if all iterations are templates
+        template_count = sum(1 for it in iterations if self._is_template_iteration(it))
+        
+        if template_count == len(iterations):
+            logger.warning("[architect] all %d iterations are templates, rejecting", len(iterations))
+            return False
+        
+        if template_count > 0:
+            logger.warning("[architect] %d/%d iterations are templates, but proceeding", template_count, len(iterations))
+        
+        return True
+
+    def _save_phase_json(self, phase_file: Path, result: dict) -> bool:
+        """
+        Process phase planning result:
+        1. If file exists and has content, validate and return
+        2. If file is empty but result has JSON in stdout, extract and save it
+        3. Return success status
+        """
+        # If file already has content, validate it
+        if phase_file.exists() and phase_file.stat().st_size > 0:
+            logger.info("[architect] %s already has content, validating...", phase_file.name)
+            existing_data = self.read_json(phase_file, [])
+            if self._validate_iterations(existing_data):
+                return True
+            else:
+                logger.warning("[architect] %s contains only templates, will try to replace", phase_file.name)
+                # Continue below to extract from stdout
+        
+        # Try to extract JSON from stdout if file is empty or invalid
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+        
+        if not stdout:
+            logger.error("[architect] no stdout from LLM - stderr: %s", stderr[:200] if stderr else "empty")
+            return False
+            
+        parsed, is_list = self._extract_json_from_output(stdout)
+        
+        if parsed is not None:
+            # If it's a dict and we expected a list, wrap it
+            data = parsed if is_list else [parsed] if isinstance(parsed, dict) else parsed
+            
+            # Validate the extracted data
+            if not self._validate_iterations(data):
+                logger.error("[architect] extracted JSON contains only templates")
+                return False
+            
+            logger.info("[architect] extracted JSON from stdout (%d items), saving to %s", 
+                       len(data) if isinstance(data, list) else 1, phase_file.name)
+            phase_file.write_text(json.dumps(data, indent=2))
+            return True
+        
+        logger.error("[architect] could not extract JSON from stdout. First 500 chars: %s", stdout[:500])
+        return False
 
     @staticmethod
     def _renumber(iterations: list, start_id: int, phase: int) -> list:

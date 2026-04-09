@@ -14,13 +14,18 @@ All models are local. No API keys. No cloud.
 
 import json
 import logging
+import os
 from typing import Iterator, Optional
 
 import httpx
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE    = "http://localhost:11434"
+# Load environment variables from .env file
+load_dotenv()
+
+OLLAMA_BASE    = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
 DEFAULT_MODEL  = "qwen2.5-coder:7b"
 DEFAULT_TIMEOUT = 120
 

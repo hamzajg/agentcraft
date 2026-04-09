@@ -856,6 +856,153 @@ async def live_file(path: str):
     }
 
 
+def _get_workspace_paths():
+    """Get workspace paths from workspace.yaml."""
+    from pathlib import Path
+    repo_root = Path(__file__).parent.parent
+    try:
+        import yaml
+        ws = yaml.safe_load((repo_root / "workspace.yaml").read_text()) or {}
+        paths = ws.get("paths", {})
+        return {
+            "root": repo_root,
+            "docs": repo_root / paths.get("docs", "docs"),
+            "workflow": repo_root / paths.get("workflow", ".ai"),
+            "output": repo_root / paths.get("output", "output"),
+        }
+    except Exception:
+        return {
+            "root": repo_root,
+            "docs": repo_root / "docs",
+            "workflow": repo_root / ".ai",
+            "output": repo_root / "output",
+        }
+
+
+@app.get("/api/workspace/paths")
+async def workspace_paths():
+    """Get all workspace folder paths."""
+    paths = _get_workspace_paths()
+    return {
+        "docs": {
+            "path": str(paths["docs"].relative_to(paths["root"])),
+            "exists": paths["docs"].exists(),
+            "label": "Documentation",
+            "description": "Project requirements, architecture, and design docs",
+        },
+        "workflow": {
+            "path": str(paths["workflow"].relative_to(paths["root"])),
+            "exists": paths["workflow"].exists(),
+            "label": "Workflow",
+            "description": "Iterations, tasks, and agent collaboration",
+        },
+        "project": {
+            "path": str(paths["output"].relative_to(paths["root"])),
+            "exists": paths["output"].exists(),
+            "label": "Generated Project",
+            "description": "Source code and generated artifacts",
+        },
+    }
+
+
+@app.get("/api/workspace/files")
+async def list_workspace_files(folder: str = "docs", path: str = ""):
+    """
+    List files and directories in a workspace folder.
+    
+    Args:
+        folder: One of 'docs', 'workflow', 'project'
+        path: Relative path within the folder (empty = root)
+    """
+    from pathlib import Path
+    paths = _get_workspace_paths()
+    
+    folder_map = {
+        "docs": paths["docs"],
+        "workflow": paths["workflow"],
+        "project": paths["output"],
+    }
+    
+    base = folder_map.get(folder, paths["root"])
+    if not base.exists():
+        return {"files": [], "folder": folder, "path": path, "exists": False}
+    
+    target = (base / path) if path else base
+    if not target.exists() or not target.is_dir():
+        return {"files": [], "folder": folder, "path": path, "exists": False}
+    
+    files = []
+    try:
+        for item in sorted(target.iterdir()):
+            rel_path = str(item.relative_to(base))
+            files.append({
+                "name": item.name,
+                "path": rel_path,
+                "is_dir": item.is_dir(),
+                "size": item.stat().st_size if item.is_file() else 0,
+                "modified": item.stat().st_mtime if item.is_file() else None,
+                "extension": item.suffix.lower() if item.is_file() else None,
+            })
+    except PermissionError:
+        return {"files": [], "folder": folder, "path": path, "error": "Permission denied"}
+    
+    return {
+        "files": files,
+        "folder": folder,
+        "path": path,
+        "exists": True,
+        "base_path": str(base.relative_to(paths["root"])),
+    }
+
+
+@app.get("/api/workspace/read")
+async def read_workspace_file(folder: str = "docs", path: str = ""):
+    """
+    Read a file from a workspace folder.
+    
+    Args:
+        folder: One of 'docs', 'workflow', 'project'
+        path: Relative path to the file
+    """
+    from pathlib import Path
+    paths = _get_workspace_paths()
+    
+    folder_map = {
+        "docs": paths["docs"],
+        "workflow": paths["workflow"],
+        "project": paths["output"],
+    }
+    
+    base = folder_map.get(folder, paths["root"])
+    if not base.exists():
+        raise HTTPException(status_code=404, detail=f"Folder not found: {folder}")
+    
+    target = base / path
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is a directory")
+    
+    try:
+        target.resolve().relative_to(base.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path outside workspace")
+    
+    content = target.read_text(errors="replace")
+    lines = content.splitlines()
+    
+    return {
+        "path": path,
+        "folder": folder,
+        "content": content,
+        "lines": lines,
+        "line_count": len(lines),
+        "size_bytes": len(content.encode('utf-8')),
+        "exists": True,
+    }
+
+
 @app.get("/api/live/stream")
 async def live_stream():
     """

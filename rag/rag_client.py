@@ -11,12 +11,15 @@ all methods are no-ops so existing code is unaffected.
 """
 
 import logging
+import os
 import time
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+OLLAMA_BASE = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
 
 # Maximum chunks returned per retrieve call
 DEFAULT_TOP_K  = 5
@@ -172,7 +175,7 @@ class RagClient:
     def _embed(self, text: str) -> list[float]:
         import httpx
         resp = httpx.post(
-            "http://localhost:11434/api/embeddings",
+            f"{OLLAMA_BASE}/api/embeddings",
             json={"model": self._embed_model, "prompt": text},
             timeout=30,
         )
