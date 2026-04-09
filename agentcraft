@@ -73,11 +73,12 @@ def cmd_init(args):
                 print("  Aborted.")
                 return
 
-    name    = input("  Project name:        ").strip() or "my-project"
-    ptype   = input("  Type [greenfield/legacy] (default: greenfield): ").strip() or "greenfield"
-    docs    = input("  Docs directory       (default: ./docs): ").strip() or "./docs"
-    model   = input("  Ollama model         (default: auto-detect): ").strip()
-    framework = input("  Framework [bmad-method/openspec/none] (default: none): ").strip() or ""
+    name        = input("  Project name:           ").strip() or "my-project"
+    ptype       = input("  Type [greenfield/legacy] (default: greenfield): ").strip() or "greenfield"
+    architecture = input("  Architecture architecture (default: monolith): ").strip() or "monolith"
+    docs        = input("  Docs directory          (default: ./docs): ").strip() or "./docs"
+    model       = input("  Ollama model            (default: auto-detect): ").strip()
+    framework   = input("  Framework [bmad-method/openspec/none] (default: none): ").strip() or ""
 
     import yaml
 
@@ -85,6 +86,7 @@ def cmd_init(args):
         "project": {
             "name": name,
             "type": ptype,
+            "architecture": architecture,
         },
         "paths": {
             "docs":   docs,
@@ -123,12 +125,53 @@ def cmd_init(args):
         print(f"  Created {docs}/")
         print(f"  Add your project docs to {docs}/ before running: agentcraft build")
 
+    # Handle --deps flag for dependency installation
+    if args.deps:
+        print("\n  Installing Python dependencies...")
+        import subprocess
+        try:
+            # Install requirements
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                print("  ✓ Python dependencies installed")
+                
+                # Check for aider specifically
+                import shutil
+                if shutil.which("aider"):
+                    print("  ✓ aider available (ready for agentcraft build)")
+                else:
+                    # Try to install aider if pip install didn't get it
+                    print("  Installing aider...")
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "-q", "aider-chat"],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True
+                    )
+                    if result.returncode == 0:
+                        print("  ✓ aider installed")
+                    else:
+                        print(f"  ⚠ aider installation issue: {result.stderr}")
+            else:
+                print(f"  ⚠ Dependency installation had issues: {result.stderr}")
+        except Exception as e:
+            print(f"  ⚠ Error during dependency installation: {e}")
+
     print("""
   Next steps:
     agentcraft diagnose       detect hardware, select models
     agentcraft build          run the agent team
     agentcraft comms          start the chat UI
+    
+  Or if you haven't installed dependencies yet:
+    agentcraft init --deps    install Python packages + aider
 """)
+
 
 
 # ── diagnose ─────────────────────────────────────────────────────────────────

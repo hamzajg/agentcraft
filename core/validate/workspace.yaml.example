@@ -5,7 +5,8 @@ project:
   name: my-project
   description: >
     One-sentence description of what this project builds.
-  type: greenfield          # greenfield | legacy | migration
+  type: greenfield              # greenfield | legacy | migration
+  architecture: monolith        # monolith | microservices | layered | serverless | event-driven | modular
 
 paths:
   docs:     ./docs          # agent team reads these

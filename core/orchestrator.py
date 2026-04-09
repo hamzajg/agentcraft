@@ -27,7 +27,7 @@ from core.event_stream import ES
 from core.control import CC, BuildStopped, BuildPaused
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import httpx
 
 from agents import (
@@ -151,9 +151,12 @@ class Orchestrator:
             if ws_file.exists():
                 import yaml
                 ws = yaml.safe_load(ws_file.read_text()) or {}
-                return ws.get("project", {}).get("architecture", "monolith")
+                arch = ws.get("project", {}).get("architecture", "monolith")
+                if isinstance(arch, str):
+                    logger.info("[orchestrator] Architecture: %s", arch)
+                    return arch
         except Exception as e:
-            logger.warning("Failed to load architecture from workspace.yaml: %s", e)
+            logger.warning("Failed to load architecture: %s", e)
         return "monolith"
 
     def _send_log(self, agent_id: str, message: str):
