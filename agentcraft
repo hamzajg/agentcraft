@@ -385,10 +385,15 @@ def cmd_bootstrap(args):
             print(f"  Comms server ready at http://localhost:{comms_port}")
             print("  Open the URL above to collaborate with agents during bootstrap.")
             
-            # Register cleanup handler
+            # Register cleanup handler with guard against multiple invocations
+            cleanup_done = False
             def cleanup_comms(signum, frame):
+                nonlocal cleanup_done
+                if cleanup_done:
+                    return
+                cleanup_done = True
                 print("\n  Stopping comms server...")
-                if comms_process:
+                if comms_process and comms_process.poll() is None:
                     comms_process.terminate()
                     try:
                         comms_process.wait(timeout=5)
@@ -473,13 +478,14 @@ def cmd_bootstrap(args):
         print(f"    git add api-gateway/ openspec/ && git commit -m 'feat: agent output'")
     
     # Keep comms server running for a moment, then clean up
-    if comms_process:
-        print(f"\n  Comms server still running at http://localhost:{comms_port}")
-        print("  You can continue collaborating or press Ctrl+C to stop.")
-        try:
-            comms_process.wait()  # Wait for manual termination
-        except KeyboardInterrupt:
-            print("\n  Stopping comms server...")
+    shutdown_done = False
+    def _shutdown():
+        nonlocal shutdown_done
+        if shutdown_done:
+            return
+        shutdown_done = True
+        print("\n  Stopping comms server...")
+        if comms_process and comms_process.poll() is None:
             comms_process.terminate()
             try:
                 comms_process.wait(timeout=5)
@@ -487,6 +493,16 @@ def cmd_bootstrap(args):
                 comms_process.kill()
                 comms_process.wait()
             print("  Comms server stopped.")
+
+    if comms_process:
+        print(f"\n  Comms server still running at http://localhost:{comms_port}")
+        print("  You can continue collaborating or press Ctrl+C to stop.")
+        signal.signal(signal.SIGINT, lambda s, f: _shutdown())
+        signal.signal(signal.SIGTERM, lambda s, f: _shutdown())
+        try:
+            comms_process.wait()  # Wait for manual termination
+        except KeyboardInterrupt:
+            _shutdown()
     elif comms_already_running:
         print(f"\n  Comms server still running at http://localhost:{comms_port}")
         print("  (Started before this session - not managed by this process)")

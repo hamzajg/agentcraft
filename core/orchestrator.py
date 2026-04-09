@@ -442,7 +442,7 @@ Respond with JSON matching this structure:
                         }
                     }
                     
-                    success = self.supervisor.execute_phase_0_plan(self.architect, workspace_config)
+                    success = self.supervisor.execute_phase_0_plan(workspace_config)
                     
                     if not success:
                         logger.warning("[orchestrator] phase 0 collaboration failed - no user response")

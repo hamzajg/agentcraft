@@ -22,7 +22,13 @@ export function useWebSocket(onMessage) {
 
     sock.onmessage = (e) => {
       if (e.data === '{"event":"pong"}') return
-      try { cbRef.current(JSON.parse(e.data)) } catch {}
+      try { 
+        const data = JSON.parse(e.data)
+
+        cbRef.current(data)
+      } catch (err) {
+
+      }
     }
 
     sock.onclose = () => {

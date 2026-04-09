@@ -88,6 +88,10 @@ class ConnectionManager:
 
     async def broadcast(self, event: WsEvent):
         payload = event.model_dump_json()
+        if event.event == 'log':
+            logger.debug("[ws] broadcasting %s to %d clients", event.event, len(self._connections))
+        else:
+            logger.info("[ws] broadcasting %s to %d clients", event.event, len(self._connections))
         dead = []
         for ws in self._connections:
             try:
@@ -177,6 +181,13 @@ async def clarify(req: ClarificationRequest):
     await manager.broadcast(WsEvent(
         event="clarification",
         payload=msg.model_dump(mode="json"),
+    ))
+
+    # Also broadcast updated channels list
+    channels = store.list_agents_with_history()
+    await manager.broadcast(WsEvent(
+        event="channels_updated",
+        payload={"channels": channels},
     ))
 
     # Fire external notifications (Slack/Teams if configured) for PENDING

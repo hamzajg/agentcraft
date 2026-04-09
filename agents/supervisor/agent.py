@@ -372,60 +372,48 @@ Respond ONLY with valid JSON:
 
     def execute_phase_0_plan(self, workspace: dict) -> dict:
         """
-        Execute Phase 0: Gather user requirements.
+        Execute Phase 0: Delegate to Architect for requirements gathering.
         
-        This is a context gathering task - the LLM decides what to generate.
+        Supervisor delegates requirement gathering to @architect who asks the user.
         
         Args:
             workspace: Workspace configuration
             
         Returns:
-            {"status": "success", "context": {...}}
+            {"status": "success", "docs_generated": {...}}
         """
         self.report_status("running")
-        self._log("Executing Phase 0: Requirements gathering")
+        self._log("Executing Phase 0: Delegating to @architect for requirements")
         
-        architecture = workspace.get("project", {}).get("architecture", "monolith")
         docs_dir = Path(workspace.get("docs_dir", "docs"))
         docs_dir.mkdir(parents=True, exist_ok=True)
         
-        clarification_plan = {
-            "primary_question": """
-I'm the Architect agent working with the Supervisor to plan your project. To create a proper development plan, I need to understand your project vision.
-
-Please describe what you'd like to build:
-
-1. **What is your project about?** (e.g., "a task management web app", "an AI chatbot platform")
-
-2. **What are the main features/goals?**
-
-3. **Any technical preferences?** (e.g., "React frontend", "Python backend", "PostgreSQL database")
-""",
-            "suggestions": [
-                "I want to create a web application for task management with user authentication",
-                "Help me plan a microservice-based platform for order processing",
-                "I need a simple monolithic application with REST APIs and PostgreSQL",
-            ]
-        }
-        
         self.share_context("supervisor.phase0_plan", {
-            "architecture": architecture,
-            "clarification_plan": clarification_plan,
-            "status": "gathering_input"
+            "status": "delegating_to_architect",
+            "phase": 0,
         })
         
         self.broadcast("phase0_started", {
-            "strategy": "user_clarification",
-            "architecture": architecture,
+            "strategy": "architect_delegation",
+            "delegating_to": "architect",
         })
         
-        user_input = self.ask(
-            question=clarification_plan["primary_question"],
-            suggestions=clarification_plan["suggestions"],
+        # Supervisor tells user it's delegating to @architect
+        self.info("Phase 0: Starting requirements gathering. @architect will ask you a few questions about your project vision.", file=None)
+        
+        from agents.architect.agent import ArchitectAgent
+        architect = ArchitectAgent(
+            model=self.model,
+            workspace=self.workspace,
+            rag_client=self._rag,
+            llm_client=self._llm,
         )
+        architect.log_callback = self.log_callback
+        
+        user_input = architect.gather_requirements(docs_dir)
         
         if not user_input:
-            self._log("No user response received")
+            self._log("No user response received from architect")
             self.share_context("supervisor.phase0_plan", {
                 "status": "failed",
                 "reason": "no user response"
@@ -433,7 +421,7 @@ Please describe what you'd like to build:
             self.report_status("idle")
             return {"status": "failed", "reason": "no user response"}
         
-        self._log(f"Received user input: {user_input[:100]}...")
+        self._log(f"Architect gathered requirements: {user_input[:100]}...")
         
         from agents.docs_agent.agent import DocsAgent
         docs_agent = DocsAgent(
@@ -446,18 +434,15 @@ Please describe what you'd like to build:
         generated_docs = docs_agent.generate_phase0_docs(
             user_input=user_input,
             docs_dir=docs_dir,
-            architecture=architecture,
         )
         
         self.share_context("supervisor.phase0_plan", {
-            "architecture": architecture,
             "status": "completed",
             "docs_generated": {k: str(v) for k, v in generated_docs.items()},
         })
         
         self.broadcast("phase0_completed", {
             "docs_generated": [str(v) for v in generated_docs.values()],
-            "architecture": architecture,
         })
         
         self.report_status("idle")

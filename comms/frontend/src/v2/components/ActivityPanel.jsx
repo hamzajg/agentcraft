@@ -20,49 +20,60 @@ const EVENT_COLORS = {
   paused: 'text-slate-400', resumed: 'text-teal', stopped: 'text-danger',
 }
 
-export function ActivityPanel({ events, onMinimize }) {
-  const [isMinimized, setIsMinimized] = useState(false)
+export function ActivityPanel({ events = [], onMinimize }) {
+  const [isExpanded, setIsExpanded] = useState(false) // Start minimized
   const [isCollapsed, setIsCollapsed] = useState(false)
   const eventsEndRef = useRef(null)
 
   useEffect(() => {
-    if (!isMinimized && !isCollapsed) {
+    if (!isCollapsed && isExpanded) {
       eventsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [events, isMinimized, isCollapsed])
+  }, [events, isCollapsed, isExpanded])
 
-  const toggleMinimize = () => {
-    setIsMinimized(!isMinimized)
-    onMinimize?.(!isMinimized)
+  const handleExpand = () => {
+    setIsExpanded(true)
+    setIsCollapsed(false)
   }
 
-  if (isMinimized) {
+  const handleMinimize = () => {
+    setIsExpanded(false)
+  }
+
+  // Only show button when minimized
+  if (!isExpanded) {
     return (
       <button
-        onClick={toggleMinimize}
+        onClick={handleExpand}
         className="fixed bottom-4 right-4 z-40 flex items-center gap-2 px-4 py-2 bg-slate-800 border border-slate-700 rounded-full shadow-lg hover:bg-slate-700 transition-colors"
       >
-        <ActivityIcon className="w-4 h-4 text-accent" />
+        <svg className="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+        </svg>
         <span className="text-sm text-slate-300">Activity</span>
         {events.length > 0 && (
           <span className="w-5 h-5 rounded-full bg-accent text-white text-xs font-bold flex items-center justify-center">
             {events.length > 99 ? '99+' : events.length}
           </span>
         )}
-        <ChevronUpIcon className="w-4 h-4 text-slate-400" />
+        <svg className="w-4 h-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M18 15l-6-6-6 6" />
+        </svg>
       </button>
     )
   }
 
+  // Expanded panel
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900 border-t border-slate-700 shadow-2xl">
-      {/* Header */}
       <div 
         className="flex items-center justify-between px-4 py-2 bg-slate-800/80 backdrop-blur-sm cursor-pointer"
         onClick={() => setIsCollapsed(!isCollapsed)}
       >
         <div className="flex items-center gap-3">
-          <ActivityIcon className="w-4 h-4 text-accent" />
+          <svg className="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          </svg>
           <span className="text-sm font-medium text-slate-200">Activity</span>
           {events.length > 0 && (
             <Badge variant="muted" className="text-xs">{events.length} events</Badge>
@@ -72,12 +83,14 @@ export function ActivityPanel({ events, onMinimize }) {
           <button
             onClick={(e) => {
               e.stopPropagation()
-              toggleMinimize()
+              handleMinimize()
             }}
             className="p-1 rounded hover:bg-slate-700 transition-colors"
             title="Minimize"
           >
-            <MinimizeIcon className="w-4 h-4 text-slate-400" />
+            <svg className="w-4 h-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+            </svg>
           </button>
           <button
             onClick={(e) => {
@@ -87,17 +100,15 @@ export function ActivityPanel({ events, onMinimize }) {
             className="p-1 rounded hover:bg-slate-700 transition-colors"
             title={isCollapsed ? 'Expand' : 'Collapse'}
           >
-            <ChevronDownIcon className={`w-4 h-4 text-slate-400 transition-transform ${isCollapsed ? '-rotate-180' : ''}`} />
+            <svg className={`w-4 h-4 text-slate-400 transition-transform ${isCollapsed ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
           </button>
         </div>
       </div>
 
-      {/* Content */}
       {!isCollapsed && (
-        <div 
-          className="h-48 overflow-y-auto"
-          style={{ maxHeight: '192px' }}
-        >
+        <div className="h-48 overflow-y-auto">
           {events.length === 0 ? (
             <div className="flex items-center justify-center h-full text-slate-500">
               <p className="text-sm">No events yet. Events will appear here as agents work.</p>
@@ -145,37 +156,5 @@ export function ActivityPanel({ events, onMinimize }) {
         </div>
       )}
     </div>
-  )
-}
-
-function ActivityIcon({ className }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-    </svg>
-  )
-}
-
-function ChevronUpIcon({ className }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M18 15l-6-6-6 6" />
-    </svg>
-  )
-}
-
-function ChevronDownIcon({ className }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  )
-}
-
-function MinimizeIcon({ className }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
-    </svg>
   )
 }

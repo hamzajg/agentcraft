@@ -20,7 +20,7 @@ export function WorkspaceLayout({
 }) {
   const [selectedFile, setSelectedFile] = useState(null)
   const [showFileViewer, setShowFileViewer] = useState(true)
-  const [activityMinimized, setActivityMinimized] = useState(false)
+  const [activityMinimized, setActivityMinimized] = useState(true) // Hidden by default
 
   const handleFileSelect = (file) => {
     setSelectedFile(file)

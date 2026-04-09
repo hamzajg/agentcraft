@@ -322,3 +322,40 @@ Generate 6-12 iterations across 3 phases. Keep each iteration small (2-4 files).
             User's response
         """
         return self.ask(question=question, suggestions=suggestions or [])
+
+    def gather_requirements(self, docs_dir: Path) -> str:
+        """
+        Gather project requirements from the user.
+        
+        This is the Architect's responsibility - to understand the user's vision.
+        
+        Args:
+            docs_dir: Directory to save any documentation
+            
+        Returns:
+            User's project description
+        """
+        self._log("Gathering project requirements from user")
+        
+        clarification_question = """I'm @architect, working with the Supervisor to plan your project.
+
+To create a proper development plan, I need to understand your vision:
+
+1. **What do you want to build?** (e.g., "a task management app", "an AI chatbot", "a simple calculator")
+
+2. **What are the main features/goals?**
+
+3. **Any technical preferences?** (language, framework, database - or leave it to me to decide)
+
+4. **Scale expectations?** (single user, team, enterprise)"""
+
+        suggestions = [
+            "I want to create a web application for task management with user authentication",
+            "Build me a simple CLI calculator that can add, subtract, multiply, divide",
+            "I need a REST API for a blog with posts and comments",
+        ]
+        
+        return self.ask(
+            question=clarification_question,
+            suggestions=suggestions,
+        )

@@ -33,6 +33,7 @@ export default function App() {
 
     if (event === 'clarification' || event === 'agent_reply') {
       const m = payload
+
       setMessages((prev) => {
         const list = prev[m.agent_id] ?? []
         const idx = list.findIndex((x) => x.id === m.id)
@@ -47,6 +48,33 @@ export default function App() {
         const prevTitle = document.title
         document.title = `(${payload.agent_label || payload.agent_id}) needs input — AgentCraft`
         setTimeout(() => { document.title = prevTitle }, 6000)
+      }
+      return
+    }
+
+    if (event === 'channels_updated') {
+      if (payload.channels) {
+        setChannels(payload.channels)
+        // Set active agent if none selected
+        if (!activeAgent && payload.channels.length > 0) {
+          setActiveAgent(payload.channels[0].agent_id)
+        }
+      }
+      return
+    }
+
+    if (event === 'reply_confirmed') {
+      if (payload.agent_id && payload.id) {
+        setMessages((prev) => {
+          const list = prev[payload.agent_id] ?? []
+          const idx = list.findIndex((x) => x.id === payload.id)
+          if (idx >= 0) {
+            const updated = [...list]
+            updated[idx] = { ...updated[idx], ...payload, status: 'replied' }
+            return { ...prev, [payload.agent_id]: updated }
+          }
+          return prev
+        })
       }
       return
     }
@@ -87,11 +115,12 @@ export default function App() {
       ])
       setChannels(channelsData)
       setPendingCount(pending.messages?.length || 0)
-      const initialMessages = {}
+      const newPendingMessages = {}
       pending.messages?.forEach((m) => {
-        initialMessages[m.agent_id] = [...(initialMessages[m.agent_id] || []), m]
+        newPendingMessages[m.agent_id] = [...(newPendingMessages[m.agent_id] || []), m]
       })
-      setMessages((prev) => ({ ...initialMessages, ...prev }))
+      // Merge with existing messages, preserving existing messages
+      setMessages((prev) => ({ ...prev, ...newPendingMessages }))
       if (!activeAgent && channelsData.length > 0) {
         setActiveAgent(channelsData[0].agent_id)
       }
@@ -117,7 +146,23 @@ export default function App() {
     if (sending) return
     setSending(true)
     try {
-      await api.reply(msgId, text)
+      const result = await api.reply(msgId, text)
+      // Update the message in local state with the confirmed reply
+      if (result?.message) {
+        const confirmedMsg = result.message
+        setMessages((prev) => {
+          const list = prev[confirmedMsg.agent_id] ?? []
+          const idx = list.findIndex((x) => x.id === confirmedMsg.id)
+          if (idx >= 0) {
+            const updated = [...list]
+            updated[idx] = confirmedMsg
+            return { ...prev, [confirmedMsg.agent_id]: updated }
+          }
+          // Message not in list, add it
+          return { ...prev, [confirmedMsg.agent_id]: [confirmedMsg, ...list] }
+        })
+      }
+      // Also refresh pending count
       loadStatus()
     } catch (e) {
       console.error('reply failed', e)
