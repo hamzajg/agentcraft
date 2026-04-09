@@ -17,9 +17,14 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     return [...msgs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
   }, [activeAgent, messages])
 
-  // Find the most recent pending message
+  // Find the most recent pending message (only from recent messages, last 30 min)
   const currentPending = useMemo(() => {
-    const pending = allMessages.filter(m => m.status === 'pending')
+    const thirtyMinsAgo = Date.now() - 30 * 60 * 1000
+    const pending = allMessages.filter(m => {
+      if (m.status !== 'pending') return false
+      const createdAt = new Date(m.created_at).getTime()
+      return createdAt > thirtyMinsAgo // Only recent pending messages
+    })
     if (pending.length === 0) return null
     // Return the one with latest created_at
     return pending.reduce((latest, m) => 

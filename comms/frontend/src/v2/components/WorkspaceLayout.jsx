@@ -105,7 +105,13 @@ export function WorkspaceLayout() {
           if (!exists) {
             next[m.agent_id] = [...arr, m]
           } else {
-            next[m.agent_id] = arr.map(x => x.id === m.id ? m : x)
+            next[m.agent_id] = arr.map(x => {
+              // Never downgrade replied status back to pending
+              if (x.id === m.id && x.status === 'replied') {
+                return x // Keep replied status
+              }
+              return x.id === m.id ? m : x
+            })
           }
         }
         return next
@@ -129,9 +135,23 @@ export function WorkspaceLayout() {
     api.messages(activeAgent).then(msgs => {
       setMessages(prev => {
         const existing = prev[activeAgent] ?? []
-        const existingIds = new Set(existing.map(m => m.id))
-        const newMsgs = msgs.filter(m => !existingIds.has(m.id))
-        return { ...prev, [activeAgent]: [...newMsgs, ...existing] }
+        const merged = [...existing]
+        for (const m of msgs) {
+          const idx = merged.findIndex(x => x.id === m.id)
+          if (idx < 0) {
+            merged.push(m)
+          } else if (m.status === 'replied' && merged[idx].status !== 'replied') {
+            // Never overwrite replied status with pending
+            merged[idx] = m
+          } else if (m.status !== 'replied' && merged[idx].status === 'replied') {
+            // Keep replied status
+          } else {
+            merged[idx] = m
+          }
+        }
+        // Sort by created_at ascending
+        merged.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        return { ...prev, [activeAgent]: merged }
       })
     }).catch(() => {})
   }, [activeAgent])
