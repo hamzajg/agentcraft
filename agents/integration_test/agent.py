@@ -17,7 +17,7 @@ from core.base import AiderAgent
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text()
+SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the Integration Test Agent. Write integration and E2E tests."""
 
 
 class IntegrationTestAgent(AiderAgent):

@@ -15,8 +15,7 @@ from core.base import AiderAgent
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "spec.md"
-SYSTEM_PROMPT = _PROMPT_FILE.read_text() if _PROMPT_FILE.exists() else "# Spec Agent"
+SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the Spec Agent. Create specification documents from requirements."""
 
 
 class SpecAgent(AiderAgent):

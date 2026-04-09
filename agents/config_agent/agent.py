@@ -9,7 +9,7 @@ from core.base import AiderAgent
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text()
+SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the Config Agent. Generate configuration files (JSON, YAML, properties)."""
 
 
 class ConfigAgent(AiderAgent):
