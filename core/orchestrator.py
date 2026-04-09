@@ -189,6 +189,31 @@ class Orchestrator:
             return False
         return any(docs_dir.iterdir())
 
+    def _check_empty_docs(self) -> list[dict]:
+        """Check for empty documents and return list of {file, responsible_agent}."""
+        empty_docs = []
+        responsible_agents = {
+            "spec.md": "@spec",
+            "use_cases.md": "@spec",
+            "architecture.md": "@architect",
+            "plan.md": "@planner",
+        }
+        for md_file in self.docs_dir.glob("*.md"):
+            if md_file.stat().st_size < 50:
+                agent = responsible_agents.get(md_file.name, "@supervisor")
+                empty_docs.append({
+                    "file": str(md_file.relative_to(self.workspace.parent)),
+                    "responsible": agent,
+                })
+        return empty_docs
+
+    def _supervisor_status(self, message: str):
+        """Post status message from supervisor to chat."""
+        try:
+            self.supervisor.info(message)
+        except Exception as e:
+            logger.warning("[orchestrator] supervisor status failed: %s", e)
+
     def _confirm_architecture_session(self) -> bool:
         """Use LLM to decide if architecture session is needed."""
         docs_exist = self._docs_exist()
@@ -294,6 +319,13 @@ Respond with JSON:
             "model": self.model, "framework": self.framework_id or "none",
         })
 
+        # Supervisor posts bootstrap status
+        resume_mode = self.start_from > 1
+        if resume_mode:
+            self._supervisor_status(f"Resuming build from iteration {self.start_from}. Checking project state...")
+        else:
+            self._supervisor_status("Bootstrapping project. Checking existing documentation...")
+
         # ── Phase: RAG setup ──────────────────────────────────────────────────
         self._setup_rag()
         self._setup_llm()
@@ -304,6 +336,14 @@ Respond with JSON:
         self._register_all_on_bus()
         self.run_log.rag_enabled = self._rag is not None and self._rag.enabled
         self._save_log()
+
+        # Check for empty documents and notify responsible agents
+        empty_docs = self._check_empty_docs()
+        if empty_docs:
+            for doc in empty_docs:
+                self._supervisor_status(
+                    f"Document '{doc['file']}' is empty. {doc['responsible']} please complete this task."
+                )
 
         # ── Phase 0 Check: Empty docs collaboration ──────────────────────────
         phase_0_docs_empty = not any(self.docs_dir.glob("*.md"))
@@ -494,6 +534,7 @@ Respond with JSON matching this structure:
         if not any(self.docs_dir.glob("*.md")):
             logger.info("[orchestrator] docs/ is empty — completed bootstrap at phase 1")
             logger.info("[orchestrator] agents are ready. Add docs/ or start agent collaboration")
+            self._supervisor_status("Bootstrap complete. No documents found. Please add documentation or start agent collaboration.")
             if self._rag:
                 self._rag.close()
             self.run_log.completed = True
@@ -549,6 +590,9 @@ Respond with JSON matching this structure:
                 logger.info("[AUTO-RESUME] Resuming from iteration %d", next_iteration)
                 logger.info("[AUTO-RESUME] Already completed phases: %s\n", sorted(completed_phases))
                 self.start_from = next_iteration
+                self._supervisor_status(
+                    f"Auto-resuming from iteration {next_iteration}. Completed: {len(self.run_log.iterations)} iterations, {len(completed_phases)} phases."
+                )
         else:
             completed_phases = set()
         for iteration in iterations:

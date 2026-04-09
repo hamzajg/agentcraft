@@ -197,6 +197,29 @@ Respond with a detailed architecture description in JSON format:
             "style": architecture,
         }
 
+    def plan(self, docs_dir: Path) -> list[dict]:
+        """
+        Plan iterations based on documentation in a directory.
+        
+        Args:
+            docs_dir: Directory containing documentation files
+            
+        Returns:
+            List of planned iterations
+        """
+        requirements_parts = []
+        
+        if docs_dir.exists():
+            for f in sorted(docs_dir.glob("*.md")):
+                content = f.read_text()
+                requirements_parts.append(f"## {f.stem}\n\n{content}")
+        
+        requirements = "\n\n".join(requirements_parts) or "No documentation found."
+        
+        arch_context = self._determine_architecture_style()
+        
+        return self.plan_iterations(requirements, arch_context)
+
     def plan_iterations(self, requirements: str, architecture: str = None) -> list[dict]:
         """
         Plan iterations based on requirements using LLM.
