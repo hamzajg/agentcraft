@@ -4,45 +4,43 @@ import { Badge, Avatar } from './ui'
 export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply }) {
   const [showChat, setShowChat] = useState(false)
   const [replyText, setReplyText] = useState('')
-  const [sentReplies, setSentReplies] = useState({}) // msgId -> reply text
+  const [localReplies, setLocalReplies] = useState({}) // msgId -> reply text for optimistic updates
   const [showArchived, setShowArchived] = useState(false)
   const messagesEndRef = useRef(null)
 
-  const channelMessages = useMemo(
-    () => (activeAgent ? messages[activeAgent] ?? [] : []),
-    [activeAgent, messages]
-  )
-
   const selectedChannel = channels.find(c => c.agent_id === activeAgent)
 
-  // Find pending messages (need reply)
-  const pendingMessages = useMemo(
-    () => channelMessages.filter(m => m.status === 'pending'),
-    [channelMessages]
-  )
+  // Sort ALL messages by created_at ascending (oldest first)
+  const allMessages = useMemo(() => {
+    if (!activeAgent) return []
+    const msgs = messages[activeAgent] ?? []
+    return [...msgs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+  }, [activeAgent, messages])
 
-  // Current pending message (last one user needs to reply to)
-  const currentPending = pendingMessages.length > 0 
-    ? pendingMessages[pendingMessages.length - 1] 
-    : null
+  // Find the most recent pending message
+  const currentPending = useMemo(() => {
+    const pending = allMessages.filter(m => m.status === 'pending')
+    if (pending.length === 0) return null
+    // Return the one with latest created_at
+    return pending.reduce((latest, m) => 
+      new Date(m.created_at) > new Date(latest.created_at) ? m : latest
+    )
+  }, [allMessages])
 
-  // Messages to show (exclude old pending messages before the current one)
+  // Find the index of currentPending in allMessages
+  const currentPendingIdx = useMemo(() => {
+    if (!currentPending) return -1
+    return allMessages.findIndex(m => m.id === currentPending.id)
+  }, [allMessages, currentPending])
+
+  // Show messages from currentPending onwards, or last 5 if no pending
   const visibleMessages = useMemo(() => {
-    if (!currentPending) return channelMessages.slice(-1) // Show last message if no pending
-    
-    // Find index of current pending
-    const currentIdx = channelMessages.findIndex(m => m.id === currentPending.id)
-    
-    // Get messages from current pending onwards (inclusive)
-    return channelMessages.slice(currentIdx)
-  }, [channelMessages, currentPending])
-
-  // Archive all messages before visible
-  const archivedMessages = useMemo(() => {
-    if (!currentPending) return []
-    const currentIdx = channelMessages.findIndex(m => m.id === currentPending.id)
-    return channelMessages.slice(0, currentIdx)
-  }, [channelMessages, currentPending])
+    if (allMessages.length === 0) return []
+    if (currentPendingIdx >= 0) {
+      return allMessages.slice(currentPendingIdx)
+    }
+    return allMessages.slice(-5) // Last 5 if no pending
+  }, [allMessages, currentPendingIdx])
 
   // Auto-scroll
   useEffect(() => {
@@ -51,16 +49,19 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
       }, 100)
     }
-  }, [visibleMessages.length])
+  }, [visibleMessages.length, currentPending?.id])
 
   const handleAgentClick = (agentId) => {
     setActiveAgent(agentId)
     setShowChat(true)
-    setSentReplies({}) // Reset sent replies when switching
+    setLocalReplies({})
+    setReplyText('')
   }
 
   const handleBack = () => {
     setShowChat(false)
+    setLocalReplies({})
+    setReplyText('')
   }
 
   const handleSend = async () => {
@@ -69,27 +70,38 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     const msgId = currentPending.id
     const text = replyText
     
-    // Show reply immediately (optimistic)
-    setSentReplies(prev => ({ ...prev, [msgId]: text }))
+    // Optimistic update
+    setLocalReplies(prev => ({ ...prev, [msgId]: text }))
     setReplyText('')
     
     try {
       await onReply(msgId, text)
     } catch (err) {
       console.error('Send failed:', err)
+      // Rollback on error
+      setLocalReplies(prev => {
+        const next = { ...prev }
+        delete next[msgId]
+        return next
+      })
     }
   }
 
   const handleSuggestionClick = async (suggestion, msgId) => {
     if (!msgId || sending) return
     
-    // Show reply immediately
-    setSentReplies(prev => ({ ...prev, [msgId]: suggestion }))
+    // Optimistic update
+    setLocalReplies(prev => ({ ...prev, [msgId]: suggestion }))
     
     try {
       await onReply(msgId, suggestion)
     } catch (err) {
       console.error('Send failed:', err)
+      setLocalReplies(prev => {
+        const next = { ...prev }
+        delete next[msgId]
+        return next
+      })
     }
   }
 
@@ -161,7 +173,9 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                 const status = statuses[channel.agent_id] || 'idle'
                 const agentMessages = messages[channel.agent_id] || []
                 const hasPending = agentMessages.some(m => m.status === 'pending')
-                const lastMsg = agentMessages[agentMessages.length - 1]
+                const lastMsg = [...agentMessages].sort((a, b) => 
+                  new Date(b.created_at) - new Date(a.created_at)
+                )[0]
 
                 return (
                   <button
@@ -205,38 +219,16 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       {showChat && activeAgent && (
         <>
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {/* Archived messages */}
-            {archivedMessages.length > 0 && (
-              <div className="mb-4">
-                <button
-                  onClick={() => setShowArchived(!showArchived)}
-                  className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 mb-2"
-                >
-                  <svg className={`w-3 h-3 transition-transform ${showArchived ? '' : '-rotate-90'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                  {archivedMessages.length} archived
-                </button>
-                {showArchived && (
-                  <div className="space-y-1 opacity-50">
-                    {archivedMessages.map((msg) => (
-                      <ArchivedBubble key={msg.id} msg={msg} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Visible messages */}
             {visibleMessages.map((msg) => {
-              const isCurrent = msg.id === currentPending?.id
-              const userReply = sentReplies[msg.id] || msg.reply
+              const isCurrentPending = msg.id === currentPending?.id
+              const userReply = localReplies[msg.id] || msg.reply
               
               return (
                 <div key={msg.id} className="space-y-2">
                   {/* Agent message */}
                   <div className={`rounded-xl border p-3 ${
-                    isCurrent && !userReply
+                    isCurrentPending && !userReply
                       ? 'border-amber/30 bg-amber/5' 
                       : 'border-slate-800 bg-slate-900/30'
                   }`}>
@@ -246,7 +238,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                         <span className="text-xs font-medium text-slate-300">@{msg.agent_id}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        {isCurrent && !userReply && (
+                        {isCurrentPending && !userReply && (
                           <span className="flex items-center gap-1 text-xs text-amber">
                             <span className="w-1.5 h-1.5 rounded-full bg-amber animate-pulse" />
                             Awaiting reply
@@ -260,8 +252,8 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                       {msg.question}
                     </p>
 
-                    {/* Suggestions */}
-                    {msg.suggestions?.length > 0 && isCurrent && !userReply && (
+                    {/* Suggestions - only for current pending without reply */}
+                    {msg.suggestions?.length > 0 && isCurrentPending && !userReply && (
                       <div className="border-t border-slate-700/50 pt-2 mt-2">
                         <p className="text-xs text-slate-500 mb-1.5">Quick replies:</p>
                         <div className="flex flex-wrap gap-1.5">
@@ -337,21 +329,6 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
           </div>
         </>
       )}
-    </div>
-  )
-}
-
-function ArchivedBubble({ msg }) {
-  return (
-    <div className="rounded-lg border border-slate-800/50 p-2 bg-slate-900/30">
-      <div className="flex items-center gap-1.5 mb-1">
-        <Avatar name={msg.agent_id} size="xs" />
-        <span className="text-xs text-slate-500">@{msg.agent_id}</span>
-        <span className="text-xs text-slate-600 ml-auto">{formatTime(msg.created_at)}</span>
-      </div>
-      <p className="text-xs text-slate-500 truncate">
-        {msg.question || msg.reply || 'Message'}
-      </p>
     </div>
   )
 }

@@ -97,11 +97,19 @@ export function WorkspaceLayout() {
       ])
       setChannels(channelsData)
       setPendingCount(pending.messages?.length || 0)
-      const newPendingMessages = {}
-      pending.messages?.forEach((m) => {
-        newPendingMessages[m.agent_id] = [...(newPendingMessages[m.agent_id] || []), m]
+      setMessages(prev => {
+        const next = { ...prev }
+        for (const m of (pending.messages ?? [])) {
+          const arr = next[m.agent_id] ?? []
+          const exists = arr.some(x => x.id === m.id)
+          if (!exists) {
+            next[m.agent_id] = [...arr, m]
+          } else {
+            next[m.agent_id] = arr.map(x => x.id === m.id ? m : x)
+          }
+        }
+        return next
       })
-      setMessages(prev => ({ ...prev, ...newPendingMessages }))
       if (!activeAgent && channelsData.length > 0) {
         setActiveAgent(channelsData[0].agent_id)
       }
@@ -117,10 +125,15 @@ export function WorkspaceLayout() {
   }, [loadStatus])
 
   useEffect(() => {
-    if (!activeAgent || messages[activeAgent]?.length > 0) return
-    api.messages(activeAgent)
-      .then(msgs => setMessages(prev => ({ ...prev, [activeAgent]: msgs })))
-      .catch(() => {})
+    if (!activeAgent) return
+    api.messages(activeAgent).then(msgs => {
+      setMessages(prev => {
+        const existing = prev[activeAgent] ?? []
+        const existingIds = new Set(existing.map(m => m.id))
+        const newMsgs = msgs.filter(m => !existingIds.has(m.id))
+        return { ...prev, [activeAgent]: [...newMsgs, ...existing] }
+      })
+    }).catch(() => {})
   }, [activeAgent])
 
   const handleReply = async (msgId, text) => {
@@ -130,6 +143,7 @@ export function WorkspaceLayout() {
       const result = await api.reply(msgId, text)
       if (result?.message) {
         const confirmedMsg = result.message
+        setPendingCount(n => Math.max(0, n - 1))
         setMessages(prev => {
           const list = prev[confirmedMsg.agent_id] ?? []
           const idx = list.findIndex(x => x.id === confirmedMsg.id)
@@ -141,7 +155,6 @@ export function WorkspaceLayout() {
           return { ...prev, [confirmedMsg.agent_id]: [confirmedMsg, ...list] }
         })
       }
-      loadStatus()
     } catch (e) {
       console.error('reply failed', e)
     } finally {
