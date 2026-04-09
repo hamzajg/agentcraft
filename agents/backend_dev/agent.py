@@ -1,5 +1,5 @@
 """
-backend_dev.py — writes Java and Spring Boot source files.
+backend_dev.py — writes source code files.
 """
 
 import logging

@@ -161,15 +161,15 @@ Design a system architecture that:
 Consider:
 - Component boundaries
 - Data flow
-- Technology choices
-- API design
+- Technology choices (let the LLM decide what's appropriate)
+- Interface design (let the LLM decide: REST, GraphQL, gRPC, CLI, library, etc.)
 - Security
 - Error handling
 
 Respond with a detailed architecture description in JSON format:
 ```json
 {{
-  "style": "monolith|microservices|event-driven|...",
+  "style": "monolith|microservices|event-driven|cli|library|...",
   "components": [
     {{
       "name": "component-name",
@@ -182,9 +182,9 @@ Respond with a detailed architecture description in JSON format:
     "entities": [...],
     "relationships": [...]
   }},
-  "api_design": {{
-    "style": "REST|GraphQL|gRPC",
-    "endpoints": [...]
+  "interface_design": {{
+    "type": "determined by LLM based on requirements",
+    "details": "..."
   }},
   "rationale": "why this architecture was chosen"
 }}
@@ -253,6 +253,11 @@ Create a phased implementation plan. Each phase should:
 - Deliver value incrementally
 - Build on previous phases
 
+The number of iterations and phases should be proportional to the project complexity:
+- Simple projects (scripts, tools): 1-2 phases, 2-4 iterations
+- Medium projects (apps, services): 2-3 phases, 4-8 iterations
+- Complex projects (enterprise, distributed): 3+ phases, 8+ iterations
+
 Output ONLY a valid JSON array of iterations:
 ```json
 [
@@ -261,15 +266,14 @@ Output ONLY a valid JSON array of iterations:
     "phase": 1,
     "name": "short descriptive name",
     "goal": "one sentence goal",
-    "layer": "model|api|infrastructure",
-    "files_expected": ["path/to/File.java"],
+    "files_expected": ["path/to/file"],
     "depends_on": [],
     "acceptance_criteria": ["compiles", "tests pass"]
   }}
 ]
 ```
 
-Generate 6-12 iterations across 3 phases. Keep each iteration small (2-4 files).
+Keep each iteration small and focused (1-4 files).
 """
 
         result = self.run(message=prompt, timeout=300)
@@ -322,8 +326,8 @@ Generate 6-12 iterations across 3 phases. Keep each iteration small (2-4 files).
 {json.dumps(design.get('data_model', {}), indent=2)}
 ```
 
-## API Design
-{json.dumps(design.get('api_design', {}), indent=2)}
+## Interface Design
+{json.dumps(design.get('interface_design', {}), indent=2)}
 
 ## Rationale
 {design.get('rationale', 'No rationale provided.')}
@@ -374,8 +378,8 @@ To create a proper development plan, I need to understand your vision:
 
         suggestions = [
             "I want to create a web application for task management with user authentication",
-            "Build me a simple CLI calculator that can add, subtract, multiply, divide",
-            "I need a REST API for a blog with posts and comments",
+            "Build me a simple command-line tool that performs calculations",
+            "I need a library module for data processing",
         ]
         
         return self.ask(

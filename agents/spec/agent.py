@@ -111,10 +111,14 @@ class SpecAgent(AiderAgent):
         result2 = self.run(
             message=(
                 "Write spec.md for this project.\n\n"
-                "Include exactly these sections:\n"
+                "Include these sections (adapt to the project type):\n"
                 "## Problem\nOne paragraph.\n\n"
                 "## Entities\nFor each entity: name, fields (name:type), key behaviour.\n\n"
-                "## API\nFor each endpoint: METHOD /path — what it does, request body, response.\n\n"
+                "## Interface\nDescribe how users/systems interact with this project.\n"
+                "  - For APIs: endpoints, methods, request/response\n"
+                "  - For CLI: commands, arguments, output format\n"
+                "  - For libraries: public functions/classes, parameters, return values\n"
+                "  - For GUIs: screens, user flows, interactions\n\n"
                 "## Rules\nBullet list of system-wide rules (invariants).\n\n"
                 "Keep it short. One sentence per point."
             ),

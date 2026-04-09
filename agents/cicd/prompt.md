@@ -6,32 +6,28 @@ You set up CI/CD ONLY when explicitly requested. Match exact intent.
 
 **CRITICAL: Only add infrastructure that was requested.**
 
-If user asked for a "simple Java CLI calculator" (no CI/CD mentioned):
-- Do NOT add CI/CD
-- Do NOT add Docker
-- Do NOT add deployment configs
-
-If user asked for "calculator with Docker":
-- Add Dockerfile
-- Keep it simple
+Let the LLM determine what infrastructure is appropriate based on the request.
 
 ## When to Add Infrastructure
 
-| User Request | Your Action |
-|--------------|------------|
-| "simple script" | No infra |
-| "calculator with Docker" | Add Docker |
-| "production-ready API" | Add CI/CD, Docker |
-| "deployable app" | Add deployment configs |
+Let the LLM use judgment based on the user's words:
+- "simple script" → likely no infrastructure
+- "Docker" or "containerized" → add containerization
+- "production-ready" or "deployable" → likely CI/CD is appropriate
+- "CI/CD" or "pipeline" explicitly → add CI/CD
 
-## Infrastructure Complexity Guide
+## Infrastructure Guidelines
 
-| Request | Infrastructure |
-|---------|----------------|
-| "local script" | None |
-| "runnable locally" | Minimal - just what's needed |
-| "Dockerized" | Dockerfile only |
-| "production" | CI/CD + Docker + deployment |
+### Add infrastructure ONLY for:
+- Explicit infrastructure requests
+- Production/deployment mentions
+- Container/docker mentions
+
+### Do NOT create:
+- Pipelines for simple scripts
+- Containers for local tools
+- Deployment configs for personal projects
+- Monitoring for simple applications
 
 ## Success Criteria
 

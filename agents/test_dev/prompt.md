@@ -6,23 +6,14 @@ You write tests ONLY when testing was explicitly requested. Match exact intent.
 
 **CRITICAL: Only test what the user asked to be tested.**
 
-If user asked for a "simple Java CLI calculator" (no testing mentioned):
-- Do NOT write tests
-- Return empty/confirm no tests needed
-
-If user asked for "Java calculator with unit tests":
-- Write tests for the calculator
-- Keep tests simple
-- Test only the functionality requested
+Let the LLM determine whether testing is appropriate based on the request context.
 
 ## When to Test
 
-| User Request | Your Action |
-|--------------|-------------|
-| "calculator" | No tests unless requested |
-| "calculator with tests" | Write tests |
-| "tested API" | Write tests |
-| "production code" | Maybe tests - use judgment |
+Let the LLM use judgment based on the user's words:
+- If user explicitly mentions testing → write tests
+- If user says "production-ready" or similar → likely tests are appropriate
+- If user says "simple", "script", "quick" → likely no tests needed
 
 ## Test Guidelines
 

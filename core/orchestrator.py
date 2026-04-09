@@ -8,12 +8,18 @@ Startup sequence:
   4. Spec phase                — reads docs, writes spec.md + use_cases.md → indexed
   5. Architect                 — reads spec → iterations.json
   6. For each iteration:
-       Planner → tasks (TDD pairs)
-       For each task: test_dev → reviewer → worker → reviewer
-       IntegrationTestAgent → IT files → indexed
+       Planner → tasks
+       For each task: worker → immediate review → rework if needed
+       Integration tests (if LLM decides they're needed) → indexed
        Reviewer holistic pass
-  7. CI/CD agent per phase
+  7. CI/CD (if LLM decides it's needed)
   8. RagClient.close()         — clean up temp files
+
+Workflow principles:
+  - Small iterations (1-3 tasks each)
+  - Immediate feedback after every task (not deferred)
+  - Adaptive planning (LLM decides scope, CI/CD, integration tests)
+  - Walking skeleton first, then increment
 """
 
 import json
@@ -56,6 +62,8 @@ class IterationResult:
     task_results: list = field(default_factory=list)
     integration_tests_written: bool = False
     duration_s: float = 0.0
+    delivered_artifacts: list = field(default_factory=list)
+    retrospective_notes: str = ""
 
 
 @dataclass
@@ -72,6 +80,13 @@ class RunLog:
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
 class Orchestrator:
+    """
+    Orchestrates autonomous agent teams with an iterative delivery model.
+
+    Each iteration is small (1-3 tasks), gets immediate review, and delivers
+    working artifacts. After each phase, the LLM decides whether to continue
+    adapting the plan or wrap up.
+    """
 
     WORKER_MAP = {
         "test_dev":    TestDevAgent,
@@ -460,11 +475,16 @@ Respond with JSON matching this structure:
                         if self._rag and self._rag.enabled:
                             for src_path in legacy_paths:
                                 logger.info("[orchestrator] indexing legacy source: %s", src_path)
-                                # Scan source files
-                                for py_file in src_path.rglob("*.py"):
-                                    self._rag.ingest_file(py_file, "legacy")
-                                for java_file in src_path.rglob("*.java"):
-                                    self._rag.ingest_file(java_file, "legacy")
+                                # Scan all common source file types
+                                source_extensions = [
+                                    "*.py", "*.java", "*.ts", "*.tsx", "*.js", "*.jsx",
+                                    "*.go", "*.rs", "*.rb", "*.cs", "*.cpp", "*.c", "*.h",
+                                    "*.kt", "*.swift", "*.scala", "*.php", "*.sh",
+                                    "*.yaml", "*.yml", "*.json", "*.toml", "*.xml",
+                                ]
+                                for ext in source_extensions:
+                                    for src_file in src_path.rglob(ext):
+                                        self._rag.ingest_file(src_file, "legacy")
                         
                         # Generate reference docs from legacy code
                         logger.info("[orchestrator] generating reference docs from legacy code")
@@ -605,7 +625,7 @@ Respond with JSON matching this structure:
             
             # Emit phase_started if it's the first iteration of this phase
             if not any(ir.phase == phase for ir in self.run_log.iterations):
-                ES.emit("phase_started", {"phase": phase})
+                ES.emit("phase_started", {"phase": phase, "name": iteration.get("name", "")})
 
             self._comms.info(f"Starting Iteration {iteration['id']} (Phase {phase}): {iteration['name']}")
             try:
@@ -638,9 +658,30 @@ Respond with JSON matching this structure:
                          if i.get("phase", 1) == phase and i["id"] > iteration["id"]]
             if not remaining and phase not in completed_phases:
                 completed_phases.add(phase)
-                logger.info("\n  [PHASE %d COMPLETE] Running CI/CD infrastructure...", phase)
-                self._run_cicd_phase(phase)
-                ES.emit("phase_done", {"phase": phase, "duration_s": iter_result.duration_s})
+
+                # Phase retrospective — adapt the plan
+                phase_adaptation = self._phase_retrospective(phase, iteration, iterations)
+                if phase_adaptation.get("replan", False):
+                    self._log(f"Adapting remaining iterations based on retrospective")
+                    iterations = self._replan_remaining(iterations, phase, completed_phases, iterations)
+
+                # Let LLM decide if CI/CD infrastructure is needed for this phase
+                cicd_decision = self._decide_cicd_needed(phase, iteration)
+                if cicd_decision.get("needed", False):
+                    logger.info("\n  [PHASE %d COMPLETE] Running CI/CD infrastructure...", phase)
+                    self._run_cicd_phase(phase)
+                else:
+                    logger.info("\n  [PHASE %d COMPLETE] No CI/CD infrastructure needed.", phase)
+
+                # Count iterations in this phase
+                phase_iterations = [ir for ir in self.run_log.iterations if ir.phase == phase]
+                ES.emit("phase_done", {
+                    "phase": phase,
+                    "iterations": len(phase_iterations),
+                    "approved": sum(1 for ir in phase_iterations if ir.approved),
+                    "duration_s": iter_result.duration_s,
+                    "replan": phase_adaptation.get("replan", False),
+                })
                 self._save_log()
 
         # ── Cleanup ───────────────────────────────────────────────────────────
@@ -654,8 +695,178 @@ Respond with JSON matching this structure:
         ES.emit("build_done", {
             "duration_s": self.run_log.total_duration_s,
             "approved":   sum(1 for i in self.run_log.iterations if i.approved),
+            "total":      len(self.run_log.iterations),
+            "phases":     len(set(i.phase for i in self.run_log.iterations)),
+            "artifacts":  list(set(a for i in self.run_log.iterations for a in i.delivered_artifacts)),
         })
         return self.run_log
+
+    def _phase_retrospective(self, phase: int, iteration: dict, all_iterations: list) -> dict:
+        """Phase retrospective — evaluate what was delivered and decide if plan needs adapting."""
+        delivered = []
+        for ir in self.run_log.iterations:
+            if ir.phase == phase:
+                delivered.extend(ir.delivered_artifacts)
+
+        goal = iteration.get("goal", iteration.get("name", ""))
+
+        prompt = f"""You are evaluating Phase {phase} to decide if the remaining plan needs adapting.
+
+## Phase Goal
+{goal}
+
+## Delivered Artifacts
+{chr(10).join(f'- {a}' for a in delivered)}
+
+## Task
+1. Has the phase goal been substantially met?
+2. Do remaining iterations need to be adjusted based on what we learned?
+3. Should we add, remove, or modify remaining work?
+
+Respond with JSON:
+```json
+{{
+  "goal_met": true/false,
+  "replan": true/false,
+  "reason": "brief explanation",
+  "adaptations": ["add tests", "simplify scope", "extend phase"]
+}}
+```"""
+        return self._llm_json(prompt)
+
+    def _replan_remaining(self, iterations: list, current_phase: int,
+                          completed_phases: set, original_iterations: list) -> list:
+        """Use LLM to replan remaining iterations based on what was learned."""
+        # Gather what was delivered
+        delivered = []
+        for ir in self.run_log.iterations:
+            delivered.extend(ir.delivered_artifacts)
+
+        remaining = [i for i in iterations if i.get("phase", 1) > current_phase]
+
+        if not remaining:
+            return iterations
+
+        remaining_json = json.dumps(remaining, indent=2)
+        delivered_json = json.dumps(delivered, indent=2)
+
+        prompt = f"""You are replanning the remaining iterations based on what was delivered.
+
+## Delivered So Far
+{delivered_json}
+
+## Current Remaining Plan
+{remaining_json}
+
+## Task
+Adjust the remaining iterations to:
+1. Remove redundant work if capabilities were already delivered
+2. Add missing pieces if gaps were discovered
+3. Keep iterations small and focused
+
+Return the adjusted remaining iterations as a JSON array with the same structure.
+Only modify iterations for phases NOT yet completed.
+If no changes needed, return the original remaining iterations."""
+
+        try:
+            new_remaining = self._llm_json(prompt)
+            if isinstance(new_remaining, list) and new_remaining:
+                # Rebuild full iteration list: completed + adjusted remaining
+                completed = [i for i in iterations if i.get("id") <= (max(
+                    (ir.iteration_id for ir in self.run_log.iterations), default=0))]
+                return completed + new_remaining
+        except Exception as e:
+            self._log(f"Replanning failed: {e}")
+
+        return iterations
+
+    # ── LLM helpers ─────────────────────────────────────────────────────────
+
+    def _llm_json(self, prompt: str) -> dict:
+        """Query LLM and parse JSON response."""
+        response = self._llm.generate(prompt=prompt)
+        import re
+        json_match = re.search(r'```json\s*\n(.*?)\n```', response, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group(1))
+        return json.loads(response)
+
+    def _llm_text(self, prompt: str) -> str:
+        """Query LLM and return text."""
+        return self._llm.generate(prompt=prompt)
+
+    def _decide_cicd_needed(self, phase: int, iteration: dict) -> dict:
+        """Let the LLM decide if CI/CD infrastructure is needed for a phase."""
+        prompt = f"""You are the Orchestrator deciding if CI/CD infrastructure is needed.
+
+Phase {phase} just completed.
+Iteration: {iteration.get('name', '')}
+Phase goal: {iteration.get('goal', '')}
+
+Decide if CI/CD infrastructure (Docker, CI pipelines, deployment config) is needed.
+
+Consider:
+- Was infrastructure/deployment mentioned in requirements?
+- Is this a production/deployable project?
+- Would containerization or CI/CD add value?
+
+For simple scripts, CLI tools, or libraries: likely NO.
+For web apps, APIs, or deployable services: likely YES.
+
+Respond with JSON:
+{{
+  "needed": true/false,
+  "reason": "brief explanation"
+}}"""
+        try:
+            result = {"output": self._llm.generate(prompt=prompt)}
+            import json, re
+            output = result.get("output", "")
+            json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+            return json.loads(output)
+        except Exception as e:
+            self._log(f"LLM CI/CD decision failed: {e}, defaulting to no CI/CD")
+            return {"needed": False, "reason": "LLM decision failed, defaulting to no CI/CD"}
+
+    def _decide_integration_tests_needed(self, backend_tasks: list) -> dict:
+        """Let the LLM decide if integration tests are needed."""
+        if not backend_tasks:
+            return {"needed": False, "reason": "No backend tasks to integration test"}
+
+        task_files = [t.get("file", "") for t in backend_tasks]
+        prompt = f"""You are the Orchestrator deciding if integration tests are needed.
+
+Files just implemented:
+{chr(10).join(f'- {f}' for f in task_files)}
+
+Decide if integration tests (cross-component testing) are needed.
+
+Consider:
+- Are there multiple components that need to work together?
+- Is this a complex system with integration points?
+- Would integration testing add value?
+
+For simple single-file projects: likely NO.
+For multi-component systems: likely YES.
+
+Respond with JSON:
+{{
+  "needed": true/false,
+  "reason": "brief explanation"
+}}"""
+        try:
+            result = {"output": self._llm.generate(prompt=prompt)}
+            import json, re
+            output = result.get("output", "")
+            json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+            return json.loads(output)
+        except Exception as e:
+            self._log(f"LLM integration test decision failed: {e}, defaulting to yes")
+            return {"needed": True, "reason": "LLM decision failed, defaulting to integration tests"}
 
     # ── Bus wiring ───────────────────────────────────────────────────────────
 
@@ -774,14 +985,17 @@ Respond with JSON matching this structure:
                 agent_prompt = f"""You are the Orchestrator assigning an agent for this task.
 
 Task: {task}
-Architecture: {self.architecture}
 
-Available agents: backend_dev, test_dev, reviewer, integration_test, cicd, config_agent, docs_agent
+Available agents:
+- backend_dev: implements code (any language, framework, or type)
+- test_dev: writes tests (unit, integration, acceptance)
+- config_agent: creates configuration files
+- docs_agent: writes documentation
+- cicd: creates infrastructure/CI/CD files
 
 Choose the most appropriate agent based on:
-1. Task type (database, API, testing, deployment, etc.)
-2. Architecture style (monolith vs microservice)
-3. Agent specialization
+1. Task type (implementation, testing, config, docs, infrastructure)
+2. The nature of the file being created
 
 Respond with JSON:
 {{
@@ -858,16 +1072,21 @@ Respond with JSON:
 
             backend_tasks = [t for t in tasks if t.get("agent") == "backend_dev"]
             if backend_tasks:
-                it_results = self.integration_test.write_integration_tests(
-                    iteration, backend_tasks, self.docs_dir)
-                result.integration_tests_written = True
-                # Index integration tests into RAG
-                if self._rag and self._rag.enabled:
-                    for r in it_results:
-                        if r.get("test_file"):
-                            p = self.workspace / r["test_file"]
-                            if p.exists():
-                                self._rag.ingest_file(p, "codebase")
+                # Let LLM decide if integration tests are needed
+                it_decision = self._decide_integration_tests_needed(backend_tasks)
+                if it_decision.get("needed", False):
+                    it_results = self.integration_test.write_integration_tests(
+                        iteration, backend_tasks, self.docs_dir)
+                    result.integration_tests_written = True
+                    # Index integration tests into RAG
+                    if self._rag and self._rag.enabled:
+                        for r in it_results:
+                            if r.get("test_file"):
+                                p = self.workspace / r["test_file"]
+                                if p.exists():
+                                    self._rag.ingest_file(p, "codebase")
+                else:
+                    self._log(f"Integration tests skipped: {it_decision.get('reason', 'not needed')}")
 
             verdict = self.reviewer.review_iteration(iteration, tasks, self.docs_dir)
             logger.info("[orchestrator] holistic iter %d: %s",
@@ -879,8 +1098,31 @@ Respond with JSON:
                 logger.warning("  [reviewer] %s", s)
 
         result.duration_s = round(time.time() - start, 1)
+
+        # Collect delivered artifacts
+        result.delivered_artifacts = [
+            tr.file for tr in result.task_results if tr.approved
+        ]
+
+        # Iteration retrospective (brief)
+        if result.approved:
+            result.retrospective_notes = self._iteration_retrospective(result, phase)
+
         status = "✓ APPROVED" if result.approved else "✗ REJECTED"
         logger.info("\n  %s Iteration %d completed in %.1fs\n", status, iteration["id"], result.duration_s)
+
+        # Emit iteration done event
+        ES.emit("iter_done", {
+            "id": iteration["id"],
+            "phase": phase,
+            "name": iteration["name"],
+            "approved": result.approved,
+            "tasks": len(result.task_results),
+            "artifacts": result.delivered_artifacts,
+            "duration_s": result.duration_s,
+            "retrospective": result.retrospective_notes,
+        })
+
         return result
 
     # ── Task dispatch ─────────────────────────────────────────────────────────
@@ -968,13 +1210,42 @@ Respond with JSON:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _warn_tdd(self, tasks, iter_id):
-        backend = {
-            t["file"].replace("src/main/java", "src/test/java").replace(".java", "Test.java")
-            for t in tasks if t.get("agent") == "backend_dev"
-        }
-        tests = {t["file"] for t in tasks if t.get("agent") == "test_dev"}
-        for f in backend - tests:
-            logger.warning("[orchestrator] TDD WARNING iter %d: no test for %s", iter_id, f)
+        """Warn if implementation files don't have corresponding test files."""
+        # Generic approach: check if any file has a corresponding test file
+        impl_files = {t["file"] for t in tasks if t.get("agent") in ("backend_dev", "worker")}
+        test_files = {t["file"] for t in tasks if t.get("agent") == "test_dev"}
+
+        # Check for any test-related patterns (generic)
+        for impl in impl_files:
+            impl_name = Path(impl).stem
+            has_test = any(
+                impl_name in tf and ("test" in tf.lower() or "spec" in tf.lower() or "Test" in tf or "Spec" in tf)
+                for tf in test_files
+            )
+            if not has_test:
+                logger.warning("[orchestrator] TDD WARNING iter %d: no test file found for %s", iter_id, impl)
+
+    def _iteration_retrospective(self, result: IterationResult, phase: int) -> str:
+        """Brief iteration retrospective — what was delivered, any concerns."""
+        artifact_list = ", ".join(result.delivered_artifacts) if result.delivered_artifacts else "none"
+
+        prompt = f"""You are conducting a brief retrospective on Iteration {result.iteration_id} (Phase {phase}).
+
+## Delivered
+{artifact_list}
+
+## Task Results
+{chr(10).join(f'- {tr.agent}: {tr.file} — {tr.final_verdict} ({tr.attempts} attempt(s))' for tr in result.task_results)}
+
+## Task
+Provide one sentence on what went well and one sentence on any concern or improvement.
+
+Respond with a short text (no JSON)."""
+
+        try:
+            return self._llm_text(prompt).strip()[:200]
+        except Exception:
+            return ""
 
     def _combined_docs_dir(self, spec_files):
         combined = self.workspace / ".ai" / "combined_docs"

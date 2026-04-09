@@ -7,17 +7,19 @@ const EVENT_ICONS = {
   task_started: '▶', task_done: '✓', aider_token: '…',
   file_written: '✎', reviewer_verdict: '⚖', approval_gate: '⏳',
   paused: '⏸', resumed: '▶', stopped: '⏹', error: '!',
-  agent_query: '?', agent_reply: '↩', agent_context: '≡',
-  agent_delegate: '→', agent_broadcast: '◎', agent_status: '●',
-  log: '…', clarification: '?',
+  agent_query: '❓', agent_reply: '↩', agent_context: '≡',
+  agent_delegate: '⇢', agent_broadcast: '◎', agent_status: '●',
+  log: '…', clarification: '?', directive_injected: '⇢',
 }
 
 const EVENT_COLORS = {
   build_started: 'text-teal', build_done: 'text-teal', build_error: 'text-danger',
   task_started: 'text-accent', task_done: 'text-teal', error: 'text-danger',
   agent_query: 'text-amber', agent_reply: 'text-teal', agent_status: 'text-slate-400',
-  clarification: 'text-amber', approval_gate: 'text-amber',
+  agent_delegate: 'text-violet', agent_broadcast: 'text-cyan', agent_context: 'text-blue',
+  clarification: 'text-amber', approval_gate: 'text-amber', reviewer_verdict: 'text-amber',
   paused: 'text-slate-400', resumed: 'text-teal', stopped: 'text-danger',
+  file_written: 'text-teal', directive_injected: 'text-violet',
 }
 
 export function ActivityPanel({ events = [], onMinimize }) {

@@ -80,9 +80,10 @@ class TestDevAgent(AiderAgent):
     def write_acceptance_test(self, use_case_id: str, docs_dir: Path, spec_files: list[Path]) -> dict:
         """
         Write an acceptance test for a specific use case from use_cases.md.
-        Placed in src/test/java/.../acceptance/UC_N_Test.java
+        Let the LLM decide the appropriate testing approach based on the project.
         """
-        test_file = f"api-gateway/src/test/java/com/localai/gateway/acceptance/{use_case_id.replace('-','_')}_Test.java"
+        # Let the LLM determine the appropriate test structure
+        test_file = f"tests/acceptance/{use_case_id.replace('-','_')}_test"
         target    = self.workspace / test_file
         target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -91,9 +92,7 @@ class TestDevAgent(AiderAgent):
         message = (
             f"Write acceptance test for use case {use_case_id}.\n\n"
             f"File: {test_file}\n\n"
-            "Use @SpringBootTest(webEnvironment=RANDOM_PORT).\n"
-            "Use WebTestClient or TestRestTemplate.\n"
-            "Mock external services with @MockBean.\n"
+            "Use the appropriate testing framework and approach for this project.\n"
             "Output the complete test file only."
         )
         logger.info("[test_dev] writing acceptance test: %s", test_file)
@@ -111,21 +110,42 @@ class TestDevAgent(AiderAgent):
 # ---- helpers ----
 
 def _impl_to_test_path(impl_file: str) -> str:
-    """Convert src/main/java/.../Foo.java → src/test/java/.../FooTest.java"""
-    return impl_file.replace("src/main/java", "src/test/java").replace(".java", "Test.java")
+    """Convert implementation file path to test file path.
+    Let the LLM determine the appropriate test structure based on project type.
+    """
+    # Generic approach: put tests in tests/ directory with similar naming
+    parts = Path(impl_file).parts
+    # Try to find src/main or equivalent and convert to test path
+    try:
+        main_idx = parts.index("main") if "main" in parts else -1
+        if main_idx >= 0:
+            test_parts = list(parts[:main_idx]) + ["test"] + list(parts[main_idx+1:])
+            return str(Path(*test_parts).with_name(Path(parts[-1]).stem + "_test" + Path(parts[-1]).suffix))
+    except ValueError:
+        pass
+
+    # Fallback: tests/<original_name>_test.<ext>
+    return f"tests/{Path(impl_file).stem}_test{Path(impl_file).suffix}"
 
 
 def _test_class_name(impl_file: str) -> str:
-    """AgentMessage.java → AgentMessageTest"""
+    """Get test class name from implementation file."""
     return Path(impl_file).stem + "Test"
 
 
 def _test_package(impl_file: str) -> str:
-    """src/main/java/com/localai/gateway/model/Foo.java → com.localai.gateway.model"""
+    """Get test package from implementation file.
+    Returns a generic package name - let the LLM decide the actual package.
+    """
     parts = Path(impl_file).parts
     try:
-        java_idx = list(parts).index("java")
-        pkg_parts = parts[java_idx + 1:-1]
-        return ".".join(pkg_parts)
-    except ValueError:
-        return "com.localai.gateway"
+        # Try to find source directory and extract package
+        for keyword in ["src", "lib", "pkg"]:
+            if keyword in parts:
+                keyword_idx = list(parts).index(keyword)
+                pkg_parts = parts[keyword_idx + 1:-1]
+                if pkg_parts:
+                    return ".".join(pkg_parts)
+    except (ValueError, IndexError):
+        pass
+    return "tests"

@@ -186,55 +186,39 @@ Write this for an AI development team. Be precise but concise."""
         """Generate architecture document."""
         logger.info("[docs_agent] generating architecture.md")
 
-        arch_specific = {
-            "monolith": """
-### Monolith Considerations
-- Modular structure within single application
-- Shared database with clear module boundaries
-- Internal API patterns between modules
-- Deployment as single unit""",
-            "microservices": """
-### Microservice Considerations  
-- Service boundaries and responsibilities
-- Inter-service communication patterns (sync/async)
-- API gateway and service discovery
-- Data ownership per service""",
-        }.get(architecture.lower(), "")
-
         prompt = f"""Write architecture.md for this project.
 
 ## User's Vision
 {user_input}
 
-## Target Architecture
+## Target Architecture Style
 {architecture}
 
-{arch_specific}
-
 ## Task
-Create an architecture document with these sections:
+Create an architecture document with these sections. Let the LLM decide what's appropriate for this project:
 
 ### Architecture Style
-- Overall pattern ({architecture})
+- Overall pattern
 - Key characteristics and trade-offs made
 
 ### System Components
-For each major component:
+For each major component (if applicable):
 - **Component name**: Responsibility, boundaries
 - Dependencies on other components
 
 ### Data Architecture
+If applicable:
 - Data model overview (key entities)
 - Storage strategy (databases, caches)
 - Data flow between components
 
-### API Design (if applicable)
-- Internal API patterns
-- Request/response formats
+### Interface Design (if applicable)
+- Interface patterns (API, CLI, library, GUI, etc.)
+- Request/response formats or interaction patterns
 - Error handling approach
 
 ### Technology Stack
-- Languages and frameworks per component
+- Languages and frameworks
 - Key libraries and their purposes
 - Development tools
 
@@ -243,11 +227,13 @@ For each major component:
 - Key design decisions and rationale
 
 ### Security Architecture
+If applicable:
 - Authentication approach
 - Authorization model
 - Data protection measures
 
-Write this for an AI development team. Make it actionable."""
+Write this for an AI development team. Make it actionable.
+Let the LLM decide which sections are relevant and what content to include."""
 
         self.run(
             message=prompt,
@@ -267,53 +253,23 @@ Write this for an AI development team. Make it actionable."""
         """Generate project blueprint document."""
         logger.info("[docs_agent] generating blueprint.md")
 
-        phase_templates = {
-            "monolith": """
-### Phase 1: Core Foundation
-- Domain models and business logic
-- Internal module structure
-- Basic CLI or API interface
-
-### Phase 2: API Layer  
-- HTTP endpoints
-- Request validation
-- Response formatting
-
-### Phase 3: Infrastructure
-- Configuration management
-- Error handling and logging
-- Deployment setup""",
-            "microservices": """
-### Phase 1: Service Boundaries
-- Identify and define service interfaces
-- Core domain models per service
-- Inter-service communication setup
-
-### Phase 2: Service Implementation
-- Implement each service
-- API gateway
-- Service discovery
-
-### Phase 3: Infrastructure
-- Container orchestration
-- Monitoring and observability
-- CI/CD pipeline""",
-        }.get(architecture.lower(), "")
-
         prompt = f"""Write blueprint.md for this project.
 
 ## User's Vision
 {user_input}
 
 ## Task
-Create a project blueprint with these sections:
+Create a project blueprint with these sections. Let the LLM decide what phases and structure are appropriate:
 
 ### Project Summary
 - One paragraph describing the project
 - Key success criteria
 
 ### Development Phases
-{phase_templates}
+Let the LLM decide appropriate phases based on the project complexity:
+- Simple projects: 1-2 phases
+- Medium projects: 2-3 phases
+- Complex projects: 3+ phases
 
 ### Project Structure
 Recommended directory/file structure for the codebase.
@@ -352,11 +308,14 @@ This guides the AI agent team's work. Make phases clear and actionable."""
         
         # Collect legacy source files
         legacy_files = []
+        source_extensions = [
+            "*.py", "*.java", "*.ts", "*.tsx", "*.js", "*.jsx",
+            "*.go", "*.rs", "*.rb", "*.cs", "*.cpp", "*.c", "*.h",
+            "*.kt", "*.swift", "*.scala", "*.php", "*.sh",
+        ]
         for path in legacy_paths:
-            legacy_files.extend(path.rglob("*.py"))
-            legacy_files.extend(path.rglob("*.java"))
-            legacy_files.extend(path.rglob("*.ts"))
-            legacy_files.extend(path.rglob("*.js"))
+            for ext in source_extensions:
+                legacy_files.extend(path.rglob(ext))
         
         if not legacy_files:
             logger.warning("[docs_agent] no legacy source files found")

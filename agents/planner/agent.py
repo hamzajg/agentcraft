@@ -87,12 +87,12 @@ class PlannerAgent(AiderAgent):
     def _get_available_agents(self) -> list[dict]:
         """Get list of available agents with their capabilities."""
         return [
-            {"role": "backend_dev", "capabilities": ["implement", "backend", "api", "service"]},
-            {"role": "test_dev", "capabilities": ["test", "testing", "tdd", "unit", "integration"]},
-            {"role": "docs_agent", "capabilities": ["docs", "documentation", "readme"]},
-            {"role": "config_agent", "capabilities": ["config", "yaml", "json", "properties", "settings"]},
-            {"role": "reviewer", "capabilities": ["review", "quality", "security"]},
-            {"role": "cicd", "capabilities": ["ci", "cd", "pipeline", "docker", "deployment"]},
+            {"role": "backend_dev", "capabilities": ["implement code", "create files", "write logic"]},
+            {"role": "test_dev", "capabilities": ["write tests", "testing", "test-driven development"]},
+            {"role": "docs_agent", "capabilities": ["write documentation", "documentation", "readme"]},
+            {"role": "config_agent", "capabilities": ["create configuration", "settings", "config files"]},
+            {"role": "reviewer", "capabilities": ["review code", "quality check", "verify correctness"]},
+            {"role": "cicd", "capabilities": ["create infrastructure", "CI/CD", "deployment config"]},
         ]
 
     def decompose(

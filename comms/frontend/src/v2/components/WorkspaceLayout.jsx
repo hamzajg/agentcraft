@@ -19,12 +19,29 @@ export function WorkspaceLayout() {
   const [sending, setSending] = useState(false)
   const [connected, setConnected] = useState(false)
   const [events, setEvents] = useState([])
+  const [busMessages, setBusMessages] = useState([])
+
+  // ── Build progress state ─────────────────────────────────────────────
+  const [buildState, setBuildState] = useState({
+    status: 'idle',        // idle | preparing | running | paused | stopped | done | error
+    currentPhase: null,
+    currentIteration: null,
+    currentTask: null,
+    phasesCompleted: [],
+    totalPhases: 0,
+    totalIterations: 0,
+    approvedCount: 0,
+    rejectedCount: 0,
+    deliveredArtifacts: [],
+    message: '',
+  })
 
   const handleWsEvent = useCallback((ev) => {
     const { event, payload } = ev
     if (event === '_connected') { setConnected(true); return }
     if (event === '_disconnected') { setConnected(false); return }
 
+    // ── Clarification messages (agent → human) ─────────────────────────
     if (event === 'clarification') {
       const m = payload
       setMessages(prev => {
@@ -45,7 +62,7 @@ export function WorkspaceLayout() {
       setPendingCount(n => n + 1)
       if (!activeAgent) setActiveAgent(m.agent_id)
       const id = payload.id || payload.message_id || crypto.randomUUID()
-      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.question, time: new Date().toISOString() }, ...prev].slice(0, 100))
+      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.question, time: new Date().toISOString() }, ...prev].slice(0, 200))
       return
     }
 
@@ -56,9 +73,7 @@ export function WorkspaceLayout() {
         const next = { ...prev }
         for (const aid of Object.keys(next)) {
           next[aid] = next[aid].map(m => {
-            if (m.id === mid) {
-              return { ...m, status: 'replied', reply, replied_at }
-            }
+            if (m.id === mid) return { ...m, status: 'replied', reply, replied_at }
             return m
           })
         }
@@ -68,22 +83,171 @@ export function WorkspaceLayout() {
       return
     }
 
+    // ── Agent status updates ───────────────────────────────────────────
     if (event === 'agent_status') {
       setStatuses(prev => ({ ...prev, [payload.agent_id]: payload.status }))
       const id = payload.id || crypto.randomUUID()
-      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: `${payload.agent_id} is ${payload.status}`, time: new Date().toISOString() }, ...prev].slice(0, 100))
+      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: `${payload.agent_id} → ${payload.status}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
       return
     }
 
+    // ── Log messages ───────────────────────────────────────────────────
     if (event === 'log') {
       const id = payload.id || crypto.randomUUID()
-      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.message?.slice(0, 120) || 'Log entry', time: new Date().toISOString() }, ...prev].slice(0, 100))
+      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.message?.slice(0, 120) || 'Log entry', time: new Date().toISOString() }, ...prev].slice(0, 200))
       return
     }
 
+    // ── Agent-to-Agent bus messages ────────────────────────────────────
+    if (event.startsWith('agent_')) {
+      const id = payload.id || crypto.randomUUID()
+      const fromAgent = payload.from_agent || payload.agent_id || ''
+      const toAgent = payload.to_agent || ''
+      let text = ''
+
+      switch (event) {
+        case 'agent_query':
+          text = `${fromAgent} → ${toAgent}: ${payload.content?.question || 'question'}`.slice(0, 120)
+          break
+        case 'agent_reply':
+          text = `${fromAgent} ← ${toAgent}: reply`
+          break
+        case 'agent_delegate':
+          text = `${fromAgent} → ${toAgent}: ${payload.content?.task?.description || 'task'}`.slice(0, 120)
+          break
+        case 'agent_context':
+          text = `${fromAgent} shared: ${payload.content?.key || 'context'}`
+          break
+        case 'agent_broadcast':
+          text = `${fromAgent}: ${payload.content?.event || 'broadcast'}`
+          break
+        default:
+          text = `${fromAgent}: ${event}`
+      }
+
+      // Store bus message for AgentPanel display
+      setBusMessages(prev => [{
+        id, type: event, from_agent: fromAgent, to_agent: toAgent,
+        content: payload.content, text, time: new Date().toISOString(),
+      }, ...prev].slice(0, 100))
+
+      setEvents(prev => [{ id, type: event, agent_id: fromAgent, text, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // ── Build progress tracking ────────────────────────────────────────
+    if (event === 'build_started') {
+      setBuildState(prev => ({
+        ...prev, status: 'running', message: 'Build started',
+        phasesCompleted: [], approvedCount: 0, rejectedCount: 0, deliveredArtifacts: [],
+      }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: 'Build started', time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'build_done') {
+      setBuildState(prev => ({ ...prev, status: 'done', message: `Build complete — ${payload.approved || 0} iterations approved` }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: `Build complete — ${payload.approved || 0} iterations`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'error') {
+      setBuildState(prev => ({ ...prev, status: 'error', message: payload.message || 'Error occurred' }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, agent_id: payload.agent, text: payload.message || event, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'stopped') {
+      setBuildState(prev => ({ ...prev, status: 'stopped', message: 'Build stopped by user' }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: 'Build stopped', time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'paused') {
+      setBuildState(prev => ({ ...prev, status: 'paused', message: 'Build paused' }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: 'Build paused', time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'resumed') {
+      setBuildState(prev => ({ ...prev, status: 'running', message: 'Build resumed' }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: 'Build resumed', time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // Phase tracking
+    if (event === 'phase_started') {
+      setBuildState(prev => ({ ...prev, currentPhase: payload.phase, message: `Phase ${payload.phase}: ${payload.name || ''}` }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, agent_id: payload.agent_id, text: `Phase ${payload.phase}: ${payload.name || 'started'}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'phase_done') {
+      setBuildState(prev => ({
+        ...prev,
+        phasesCompleted: [...prev.phasesCompleted, payload.phase],
+        message: `Phase ${payload.phase} complete`,
+      }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: `Phase ${payload.phase} done — ${payload.sprints || payload.iterations || 0} iterations`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // Iteration tracking
+    if (event === 'iter_started') {
+      setBuildState(prev => ({ ...prev, currentIteration: payload.id, message: `Iteration ${payload.id}: ${payload.name || ''}` }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, agent_id: payload.agent_id, text: `Iter ${payload.id}: ${payload.name || 'started'}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'iter_done') {
+      setBuildState(prev => ({
+        ...prev,
+        currentIteration: null,
+        approvedCount: payload.approved ? (prev.approvedCount + 1) : prev.approvedCount,
+        rejectedCount: !payload.approved ? (prev.rejectedCount + 1) : prev.rejectedCount,
+        message: `Iteration ${payload.id} ${payload.approved ? 'approved' : 'rejected'}`,
+      }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: `Iter ${payload.id} — ${payload.approved ? '✓' : '✗'}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // Task tracking
+    if (event === 'task_started') {
+      setBuildState(prev => ({ ...prev, currentTask: { id: payload.id, agent: payload.agent, file: payload.file } }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, agent_id: payload.agent, text: `[${payload.agent}] ${payload.file || payload.description?.slice(0, 60) || ''}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+    if (event === 'task_done') {
+      setBuildState(prev => ({ ...prev, currentTask: null }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, agent_id: payload.agent, text: `[${payload.agent}] ${payload.file} — ${payload.verdict} (${payload.attempts} attempt(s))`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // File written
+    if (event === 'file_written') {
+      setBuildState(prev => ({
+        ...prev,
+        deliveredArtifacts: [...prev.deliveredArtifacts, payload.path],
+      }))
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, agent_id: payload.agent, text: `File: ${payload.path}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // Reviewer verdict
+    if (event === 'reviewer_verdict') {
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, agent_id: payload.agent, text: `Review: ${payload.verdict}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // Approval gate
+    if (event === 'approval_gate') {
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: `Awaiting approval — iteration ${payload.iteration}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // Directive injected
+    if (event === 'directive_injected') {
+      setEvents(prev => [{ id: crypto.randomUUID(), type: event, text: `Directive injected — task ${payload.task_id}`, time: new Date().toISOString() }, ...prev].slice(0, 200))
+      return
+    }
+
+    // Generic catch for any remaining build/phase/iter/task events
     if (event.includes('task') || event.includes('phase') || event.includes('iter') || event.includes('build')) {
       const id = payload.id || crypto.randomUUID()
-      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.text || payload.content || event, time: new Date().toISOString() }, ...prev].slice(0, 100))
+      setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.text || payload.content || event, time: new Date().toISOString() }, ...prev].slice(0, 200))
     }
   }, [activeAgent])
 
@@ -198,6 +362,8 @@ export function WorkspaceLayout() {
         connected={connected}
         pendingCount={pendingCount}
         agentCount={channels?.length || 0}
+        statuses={statuses}
+        buildState={buildState}
         onLogoClick={() => {}}
       />
 
@@ -239,6 +405,8 @@ export function WorkspaceLayout() {
             channels={channels}
             statuses={statuses}
             messages={messages}
+            events={events}
+            busMessages={busMessages}
             activeAgent={activeAgent}
             setActiveAgent={setActiveAgent}
             sending={sending}
@@ -247,15 +415,19 @@ export function WorkspaceLayout() {
         </div>
       </div>
 
-      <ActivityPanel 
-        events={events} 
+      <ActivityPanel
+        events={events}
         onMinimize={setActivityMinimized}
       />
     </div>
   )
 }
 
-function Header({ connected, pendingCount, agentCount, onLogoClick }) {
+function Header({ connected, pendingCount, agentCount, statuses, buildState, onLogoClick }) {
+  const activeAgents = Object.entries(statuses).filter(([, s]) => s === 'running').length
+  const blockedAgents = Object.entries(statuses).filter(([, s]) => s === 'blocked').length
+  const idleAgents = Object.entries(statuses).filter(([, s]) => s === 'idle').length
+
   return (
     <header className="h-12 flex-shrink-0 bg-slate-900 border-b border-slate-800 flex items-center px-4 gap-3">
       <button onClick={onLogoClick} className="flex items-center gap-2 hover:opacity-80 transition-opacity">
@@ -265,15 +437,92 @@ function Header({ connected, pendingCount, agentCount, onLogoClick }) {
         <span className="font-semibold text-sm text-slate-200">AgentCraft</span>
       </button>
 
+      {/* Connection status */}
       <div className="flex items-center gap-1.5">
         <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-teal' : 'bg-danger'}`} />
         <span className="text-[11px] text-slate-500">{connected ? 'connected' : 'reconnecting…'}</span>
       </div>
 
-      <div className="flex-1" />
+      {/* Build progress bar */}
+      {buildState.status !== 'idle' && (
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          {/* Build status badge */}
+          <span className={`flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
+            buildState.status === 'running' ? 'bg-teal/10 text-teal' :
+            buildState.status === 'done' ? 'bg-teal/10 text-teal' :
+            buildState.status === 'paused' ? 'bg-slate-700 text-slate-400' :
+            buildState.status === 'stopped' ? 'bg-danger/10 text-danger' :
+            buildState.status === 'error' ? 'bg-danger/10 text-danger' :
+            'bg-slate-800 text-slate-400'
+          }`}>
+            {buildState.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />}
+            {buildState.status === 'running' ? 'Running' :
+             buildState.status === 'done' ? 'Done' :
+             buildState.status === 'paused' ? 'Paused' :
+             buildState.status === 'stopped' ? 'Stopped' :
+             buildState.status === 'error' ? 'Error' :
+             buildState.status}
+          </span>
 
+          {/* Current phase/iteration */}
+          {buildState.currentPhase && (
+            <span className="text-xs text-slate-400 truncate">
+              Phase {buildState.currentPhase}
+              {buildState.currentIteration && ` → Iter ${buildState.currentIteration}`}
+            </span>
+          )}
+
+          {/* Approved/Rejected counters */}
+          {(buildState.approvedCount > 0 || buildState.rejectedCount > 0) && (
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {buildState.approvedCount > 0 && (
+                <span className="text-xs text-teal">✓ {buildState.approvedCount}</span>
+              )}
+              {buildState.rejectedCount > 0 && (
+                <span className="text-xs text-amber">✗ {buildState.rejectedCount}</span>
+              )}
+            </div>
+          )}
+
+          {/* Current task */}
+          {buildState.currentTask && (
+            <span className="text-xs text-slate-500 truncate">
+              [{buildState.currentTask.agent}] {buildState.currentTask.file}
+            </span>
+          )}
+        </div>
+      )}
+
+      {buildState.status === 'idle' && (
+        <div className="flex-1" />
+      )}
+
+      {/* Agent status summary */}
+      {agentCount > 0 && (
+        <div className="flex items-center gap-3 flex-shrink-0 text-[11px]">
+          {activeAgents > 0 && (
+            <span className="flex items-center gap-1 text-teal">
+              <span className="w-1.5 h-1.5 rounded-full bg-teal" />
+              {activeAgents} running
+            </span>
+          )}
+          {blockedAgents > 0 && (
+            <span className="flex items-center gap-1 text-amber">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber" />
+              {blockedAgents} blocked
+            </span>
+          )}
+          {idleAgents > 0 && (
+            <span className="flex items-center gap-1 text-slate-500">
+              {idleAgents} idle
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Pending replies */}
       {pendingCount > 0 && (
-        <div className="flex items-center gap-1.5 bg-amber/10 border border-amber/30 rounded-full px-3 py-1">
+        <div className="flex items-center gap-1.5 bg-amber/10 border border-amber/30 rounded-full px-3 py-1 flex-shrink-0">
           <span className="w-1.5 h-1.5 rounded-full bg-amber animate-pulse" />
           <span className="text-xs text-amber font-medium">
             {pendingCount} waiting {pendingCount === 1 ? 'reply' : 'replies'}
@@ -281,7 +530,7 @@ function Header({ connected, pendingCount, agentCount, onLogoClick }) {
         </div>
       )}
 
-      <a href="/classic" className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 rounded hover:bg-slate-800">
+      <a href="/classic" className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 rounded hover:bg-slate-800 flex-shrink-0">
         Classic UI
       </a>
     </header>

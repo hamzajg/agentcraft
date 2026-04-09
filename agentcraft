@@ -5,9 +5,9 @@ agentcraft — the autonomous AI agent team CLI.
 Usage:
   agentcraft init                  Set up a new project (interactive)
   agentcraft diagnose              Detect hardware, select optimal models
-  agentcraft build                 Build agents, check violations, setup workspace
-  agentcraft bootstrap             Run agent workflow, keep alive, print logs
-  agentcraft resume --from N       Resume from iteration N
+  agentcraft build                 Validate workspace, pull models — no execution
+  agentcraft bootstrap             Run the agent workflow (auto-resumes from checkpoint)
+  agentcraft resume --from N       Resume from a specific iteration
   agentcraft comms                 Start the human↔agent comms UI
   agentcraft chat <agent>          Chat with a specific agent via CLI
   agentcraft monitor               Live system metrics monitor
@@ -189,7 +189,7 @@ def cmd_diagnose(args):
 # ── build ─────────────────────────────────────────────────────────────────────
 
 def cmd_build(args):
-    """Run the full agent team build."""
+    """Prepare workspace, validate config, pull models — no agent execution."""
     import shutil
 
     ws = _load_ws()
@@ -208,125 +208,110 @@ def cmd_build(args):
     if args.rag:   rag_cfg["enabled"] = True
     if args.no_rag: rag_cfg["enabled"] = False
 
-    if not shutil.which("aider"):
-        print("ERROR: aider not found. Run: agentcraft init --deps")
-        sys.exit(1)
+    print(f"\n  {'='*60}")
+    print(f"  Build — {project.get('name', '?')}")
+    print(f"  {'='*60}")
 
+    # ── 1. Validate workspace ────────────────────────────────────────────
     if not docs_dir.exists():
-        print(f"ERROR: docs dir not found: {docs_dir}")
+        print(f"  ✗ Docs dir not found: {docs_dir}")
+        print(f"  Run: agentcraft init   to set up workspace")
         sys.exit(1)
+    print(f"  ✓ Workspace:  {workspace}")
+    print(f"  ✓ Docs:       {docs_dir}  ({len(list(docs_dir.glob('*.md')))} files)")
+    print(f"  ✓ Model:      {model}")
+    print(f"  ✓ Framework:  {framework or 'none'}")
+    print(f"  ✓ RAG:        {'enabled' if rag_cfg.get('enabled') else 'disabled'}")
 
-    # Check for empty docs - may need collaboration
-    doc_files = list(docs_dir.glob("*.md"))
-    needs_collaboration = len(doc_files) == 0
+    # ── 2. Validate framework ────────────────────────────────────────────
+    if framework:
+        from core.framework_loader import FrameworkLoader
+        if framework not in FrameworkLoader.list_frameworks():
+            print(f"  ✗ Unknown framework '{framework}'")
+            print(f"    Available: {FrameworkLoader.list_frameworks()}")
+            sys.exit(1)
+        print(f"  ✓ Framework '{framework}' loaded")
 
-    # Build should only prepare agents; do not start the comms server here.
-    # If collaboration is needed, the user can run `agentcraft comms` or
-    # `agentcraft bootstrap` when ready.
-
-    # Validate before building
+    # ── 3. Validate ownership boundaries ─────────────────────────────────
     if not args.no_validate:
         from core.validate.validate import main as validate_main
         sys.argv = ["validate", "--quiet"]
         try:
             validate_main()
+            print(f"  ✓ Ownership boundaries valid")
         except SystemExit as e:
             if e.code != 0:
-                print("Ownership boundary violations found.")
-                print("  Run: agentcraft validate   for details")
-                print("  Use: --no-validate          to skip (not recommended)")
+                print(f"  ✗ Ownership boundary violations found")
+                print(f"    Run: agentcraft validate   for details")
                 sys.exit(1)
+    else:
+        print(f"  — Validation skipped (--no-validate)")
 
-    if framework:
-        from core.framework_loader import FrameworkLoader
-        if framework not in FrameworkLoader.list_frameworks():
-            print(f"ERROR: Unknown framework '{framework}'")
-            print(f"       Available: {FrameworkLoader.list_frameworks()}")
-            sys.exit(1)
-
-    if rag_cfg.get("enabled"):
-        import subprocess
-        subprocess.run(["ollama", "pull", rag_cfg.get("embed_model", "nomic-embed-text")], check=False)
+    # ── 4. Pull models ──────────────────────────────────────────────────
+    if not shutil.which("ollama"):
+        print(f"  ✗ Ollama not found — install it first")
+        sys.exit(1)
 
     import subprocess
-    subprocess.run(["ollama", "pull", model], check=False)
+    models_to_pull = [model]
+    if rag_cfg.get("enabled"):
+        embed = rag_cfg.get("embed_model", "nomic-embed-text")
+        if embed not in models_to_pull:
+            models_to_pull.append(embed)
 
-    import logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)-8s  %(message)s",
-        datefmt="%H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(".ai/build.log", mode="a") if (ROOT / ".ai").exists()
-            else logging.NullHandler(),
-        ],
-    )
-    
-    # Suppress noisy HTTP request logs from httpx
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    
+    for m in models_to_pull:
+        print(f"  Pulling model: {m} ... ", end="", flush=True)
+        result = subprocess.run(
+            ["ollama", "pull", m],
+            capture_output=True, text=True, timeout=600
+        )
+        print("ok" if result.returncode == 0 else "FAILED")
+        if result.returncode != 0:
+            print(f"    {result.stderr[:200]}")
+            sys.exit(1)
+
+    # ── 5. Ready ────────────────────────────────────────────────────────
     (ROOT / ".ai").mkdir(exist_ok=True)
 
-    from core.orchestrator import Orchestrator
-
-    legacy_dirs = []
-    if ws.get("project", {}).get("type") == "legacy":
-        for d in rag_cfg.get("legacy_source_dirs", []):
-            p = ROOT / d
-            if p.exists():
-                legacy_dirs.append(p)
-
-    orch = Orchestrator(
-        model=model,
-        docs_dir=docs_dir,
-        workspace=workspace,
-        framework_id=framework,
-        max_rework_per_task=args.max_rework_task or team.get("max_rework_task", 3),
-        max_rework_per_iter=args.max_rework_iter or team.get("max_rework_iter", 2),
-        start_from_iteration=args.from_iter,
-        skip_spec=args.skip_spec,
-        rag_config=rag_cfg,
-        legacy_dirs=legacy_dirs,
-        parallel=args.parallel,
-    )
-
-    if args.phase:
-        orig = orch.architect.plan
-        def _filtered(docs_dir):
-            return [i for i in orig(docs_dir) if i.get("phase", 1) == args.phase]
-        orch.architect.plan = _filtered
-
-    if args.dry_run:
-        print(f"\n  DRY RUN — {project.get('name', '?')} ({model})")
-        print(f"  Framework: {framework or 'none'}")
-        print(f"  Docs:      {docs_dir}  ({len(list(docs_dir.glob('*.md')))} files)")
-        print(f"  Workspace: {workspace}")
-        return
-
-    # Build phase: prepare agents and workspace
-    orch.prepare()
-    
-    # Check if we need collaboration
-    needs_collaboration = not any(docs_dir.glob("*.md"))
-    
-    if needs_collaboration:
-        print(f"\n  Build complete: agents prepared for phase 0 collaboration")
-        print("  Run the following to start the agent workflow:")
-        print("    agentcraft bootstrap")
-        print("  Or open the comms UI for collaboration:")
-        print("    agentcraft comms")
-    else:
-        print(f"\n  Build complete: agents prepared and ready")
-        print("  Run the following to start the agent workflow:")
-        print("    agentcraft bootstrap")
+    print(f"\n  {'='*60}")
+    print(f"  Build complete — workspace ready")
+    print(f"  {'='*60}")
+    print(f"  Run the agents:")
+    print(f"    agentcraft bootstrap          # run full workflow")
+    print(f"    agentcraft bootstrap --from 5 # resume from iteration 5")
+    print(f"  Open collaboration UI:")
+    print(f"    agentcraft comms")
+    print()
 
 
-# ── bootstrap ────────────────────────────────────────────────────────────────
+# ── helpers: checkpoint detection ───────────────────────────────────────────
 
-def cmd_bootstrap(args):
-    """Run the agent workflow (long-running execution phase)."""
+def _detect_checkpoint() -> int:
+    """Auto-detect the last completed iteration from run_log.json.
+    Returns the next iteration to start from (1 = fresh start)."""
+    log_path = ROOT / ".ai" / "run_log.json"
+    if not log_path.exists():
+        return 1
+    try:
+        import json
+        data = json.loads(log_path.read_text())
+        iterations = data.get("iterations", [])
+        if not iterations:
+            return 1
+        # Find the last approved iteration
+        last_approved = 0
+        for it in iterations:
+            if it.get("approved"):
+                last_approved = max(last_approved, it.get("iteration_id", 0))
+        return last_approved + 1
+    except Exception:
+        return 1
+
+
+# ── helpers: shared bootstrap setup ────────────────────────────────────────
+
+def _run_workflow(args, start_from_iteration: int):
+    """Shared workflow execution — called by both bootstrap and resume."""
     import shutil
 
     ws = _load_ws()
@@ -335,7 +320,6 @@ def cmd_bootstrap(args):
     team     = ws.get("agent_team", {})
     paths    = ws.get("paths", {})
     rag_cfg  = ws.get("rag", {})
-    project  = ws.get("project", {})
 
     model     = args.model     or team.get("model", "qwen2.5-coder:7b")
     framework = args.framework or team.get("framework")
@@ -348,44 +332,32 @@ def cmd_bootstrap(args):
     if not shutil.which("aider"):
         print("ERROR: aider not found. Run: agentcraft init --deps")
         sys.exit(1)
-
     if not docs_dir.exists():
         print(f"ERROR: docs dir not found: {docs_dir}")
         sys.exit(1)
 
-    # Check for empty docs - may need collaboration
-    doc_files = list(docs_dir.glob("*.md"))
-    needs_collaboration = len(doc_files) == 0
-
-    # Start comms server early - keep it running throughout the entire build
+    # ── Start comms server ───────────────────────────────────────────────
     comms_process = None
     comms_port = 7000
-    
-    # Check if comms server is already running
+
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     comms_already_running = sock.connect_ex(('localhost', comms_port)) == 0
     sock.close()
-    
+
     if comms_already_running:
         print(f"  Comms server already running on port {comms_port}")
-        print(f"  Using existing server at http://localhost:{comms_port}")
     else:
-        print("  Starting comms server for agent collaboration...")
-        import subprocess
-        import time
-        import signal
+        print("  Starting comms server...")
+        import subprocess, time, signal
         try:
             comms_process = subprocess.Popen([
-                sys.executable, "-m", "uvicorn", "comms.main:app", 
+                sys.executable, "-m", "uvicorn", "comms.main:app",
                 f"--port={comms_port}", "--log-level=warning"
             ], cwd=str(ROOT))
-            # Wait for server to start
             time.sleep(3)
             print(f"  Comms server ready at http://localhost:{comms_port}")
-            print("  Open the URL above to collaborate with agents during bootstrap.")
-            
-            # Register cleanup handler with guard against multiple invocations
+
             cleanup_done = False
             def cleanup_comms(signum, frame):
                 nonlocal cleanup_done
@@ -402,14 +374,13 @@ def cmd_bootstrap(args):
                         comms_process.wait()
                     print("  Comms server stopped.")
                 sys.exit(0)
-            
+
             signal.signal(signal.SIGINT, cleanup_comms)
             signal.signal(signal.SIGTERM, cleanup_comms)
-            
         except Exception as e:
             print(f"  Warning: Could not start comms server: {e}")
-            print(f"  You can start it manually: python agentcraft comms --port {comms_port}")
 
+    # ── Logging ──────────────────────────────────────────────────────────
     import logging
     logging.basicConfig(
         level=logging.INFO,
@@ -421,16 +392,12 @@ def cmd_bootstrap(args):
             else logging.NullHandler(),
         ],
     )
-    
-    # Suppress noisy HTTP request logs from httpx (must be done early)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    
-    # Export COMMS_SERVER_URL for Orchestrator and agents
     os.environ["COMMS_SERVER_URL"] = f"http://localhost:{comms_port}"
-
     (ROOT / ".ai").mkdir(exist_ok=True)
 
+    # ── Orchestrator ─────────────────────────────────────────────────────
     from core.orchestrator import Orchestrator
 
     legacy_dirs = []
@@ -447,37 +414,35 @@ def cmd_bootstrap(args):
         framework_id=framework,
         max_rework_per_task=args.max_rework_task or team.get("max_rework_task", 3),
         max_rework_per_iter=args.max_rework_iter or team.get("max_rework_iter", 2),
-        start_from_iteration=args.from_iter,
-        skip_spec=args.skip_spec,
+        start_from_iteration=start_from_iteration,
+        skip_spec=getattr(args, "skip_spec", False),
         rag_config=rag_cfg,
         legacy_dirs=legacy_dirs,
-        parallel=args.parallel,
+        parallel=getattr(args, "parallel", False),
     )
 
-    if args.phase:
+    # Phase filter (optional)
+    if getattr(args, "phase", None):
         orig = orch.architect.plan
         def _filtered(docs_dir):
             return [i for i in orig(docs_dir) if i.get("phase", 1) == args.phase]
         orch.architect.plan = _filtered
 
-    # Bootstrap phase: run the agent workflow
+    # ── Run ──────────────────────────────────────────────────────────────
     run_log = orch.run()
     approved = sum(1 for i in run_log.iterations if i.approved)
-    
+
     if not any(docs_dir.glob("*.md")):
         print(f"\n  Bootstrap complete: phase 0 collaboration finished")
-        print("  Agents are ready for the next phase.")
-        print("  You can:")
-        print("    1. Review the generated docs/ and make changes")
-        print("    2. Run 'agentcraft bootstrap' again to proceed")
-        print("    3. Run 'agentcraft resume --from <iteration>' to continue from a specific point")
+        print("  Review docs/ and run again to proceed.")
     else:
-        print(f"\n  Bootstrap complete: {approved}/{len(run_log.iterations)} iterations approved")
+        print(f"\n  {'='*60}")
+        print(f"  Done: {approved}/{len(run_log.iterations)} iterations approved")
         print(f"  Log: .ai/run_log.json")
-        print(f"\n  Review and commit agent output:")
-        print(f"    git add api-gateway/ openspec/ && git commit -m 'feat: agent output'")
-    
-    # Keep comms server running for a moment, then clean up
+        print(f"  Commit output:")
+        print(f"    git add . && git commit -m 'feat: agent iteration {start_from_iteration}+'")
+
+    # ── Comms cleanup ────────────────────────────────────────────────────
     shutdown_done = False
     def _shutdown():
         nonlocal shutdown_done
@@ -496,16 +461,39 @@ def cmd_bootstrap(args):
 
     if comms_process:
         print(f"\n  Comms server still running at http://localhost:{comms_port}")
-        print("  You can continue collaborating or press Ctrl+C to stop.")
+        print("  Press Ctrl+C to stop.")
+        import signal
         signal.signal(signal.SIGINT, lambda s, f: _shutdown())
         signal.signal(signal.SIGTERM, lambda s, f: _shutdown())
         try:
-            comms_process.wait()  # Wait for manual termination
+            comms_process.wait()
         except KeyboardInterrupt:
             _shutdown()
     elif comms_already_running:
         print(f"\n  Comms server still running at http://localhost:{comms_port}")
-        print("  (Started before this session - not managed by this process)")
+        print("  (Started before this session — not managed here)")
+
+
+# ── bootstrap ────────────────────────────────────────────────────────────────
+
+def cmd_bootstrap(args):
+    """Run the agent workflow — auto-resumes from last checkpoint."""
+    ws = _load_ws()
+    _require_yaml(bootstrap_parser)
+
+    # Auto-detect checkpoint unless user overrides
+    checkpoint = getattr(args, "from_iter", None)
+    if checkpoint is not None and checkpoint > 1:
+        start_from = checkpoint
+        print(f"  Resuming from iteration {start_from} (--from)")
+    else:
+        start_from = _detect_checkpoint()
+        if start_from > 1:
+            print(f"  Auto-resume: last completed checkpoint was iteration {start_from - 1}")
+        else:
+            print(f"  Fresh start — no previous checkpoint found")
+
+    _run_workflow(args, start_from)
 
 
 # ── comms ─────────────────────────────────────────────────────────────────────
@@ -894,19 +882,12 @@ def main():
 
     # ── build ─────────────────────────────────────────────────────────────────
     global build_parser
-    p = build_parser = subs.add_parser("build", help="Run the full agent team build")
-    p.add_argument("--model",           default=None)
-    p.add_argument("--framework",       default=None)
-    p.add_argument("--phase",           type=int, default=None)
-    p.add_argument("--from",            type=int, default=1, dest="from_iter", metavar="N")
-    p.add_argument("--skip-spec",       action="store_true")
-    p.add_argument("--rag",             action="store_true", default=None)
-    p.add_argument("--no-rag",          action="store_true")
-    p.add_argument("--max-rework-task", type=int, default=None)
-    p.add_argument("--max-rework-iter", type=int, default=None)
-    p.add_argument("--no-validate",     action="store_true")
-    p.add_argument("--parallel",        action="store_true", help="Run agents in parallel (experimental)")
-    p.add_argument("--dry-run",         action="store_true")
+    p = build_parser = subs.add_parser("build", help="Validate workspace, pull models — no execution")
+    p.add_argument("--model",       default=None)
+    p.add_argument("--framework",   default=None)
+    p.add_argument("--rag",         action="store_true", default=None)
+    p.add_argument("--no-rag",      action="store_true")
+    p.add_argument("--no-validate", action="store_true")
     p.set_defaults(func=cmd_build)
 
     # ── bootstrap ─────────────────────────────────────────────────────────────
@@ -925,19 +906,20 @@ def main():
     p.set_defaults(func=cmd_bootstrap)
 
     # ── resume ────────────────────────────────────────────────────────────────
-    p = subs.add_parser("resume", help="Resume build from a specific iteration")
-    p.add_argument("--from", type=int, required=True, dest="from_iter", metavar="N")
+    # Alias for bootstrap — bootstrap auto-detects checkpoint by default
+    p = subs.add_parser("resume", help="Resume workflow (alias for bootstrap --from)")
+    p.add_argument("--from", type=int, default=None, dest="from_iter", metavar="N",
+                   help="Resume from specific iteration (optional — auto-detects if omitted)")
     p.add_argument("--model", default=None)
     p.add_argument("--framework", default=None)
     p.add_argument("--rag", action="store_true", default=None)
     p.add_argument("--no-rag", action="store_true")
-    p.add_argument("--no-validate", action="store_true")
-    p.add_argument("--dry-run", action="store_true")
     p.add_argument("--phase", type=int, default=None)
     p.add_argument("--skip-spec", action="store_true", default=True)
     p.add_argument("--max-rework-task", type=int, default=None)
     p.add_argument("--max-rework-iter", type=int, default=None)
-    p.set_defaults(func=cmd_build)
+    p.add_argument("--parallel", action="store_true")
+    p.set_defaults(func=cmd_bootstrap)
 
     # ── comms ─────────────────────────────────────────────────────────────────
     p = subs.add_parser("comms", help="Start the human↔agent comms UI")

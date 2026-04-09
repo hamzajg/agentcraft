@@ -4,10 +4,9 @@ integration_test.py — Integration and E2E test agent.
 Runs after all tasks in an iteration are individually approved.
 Writes tests that cross component boundaries:
   - Integration tests: two or more real components wired together
-  - E2E tests: full HTTP call through the stack (mocking only external I/O)
-  - CLI tests: bash-level tests using the ai CLI wrapper
+  - E2E tests: full call through the stack (mocking only external I/O)
 
-Placed in src/test/java/.../integration/ and src/test/java/.../e2e/
+Let the LLM decide the appropriate testing approach based on the project type.
 """
 
 import logging
@@ -54,6 +53,7 @@ class IntegrationTestAgent(AiderAgent):
         Write integration tests covering the interactions between
         components produced in this iteration.
 
+        Let the LLM decide the appropriate testing approach.
         Returns list of result dicts (one per test file written).
         """
         ai_dir    = self.workspace / ".ai"
@@ -72,10 +72,8 @@ class IntegrationTestAgent(AiderAgent):
             + ([uc_file]   if uc_file.exists()   else [])
         )
 
-        test_file = (
-            f"api-gateway/src/test/java/com/localai/gateway/integration/"
-            f"Iter{iteration['id']}_{_snake(iteration['name'])}IT.java"
-        )
+        # Let the LLM determine the appropriate test structure
+        test_file = f"tests/integration/iter_{iteration['id']}_{_snake(iteration['name'])}"
         target = self.workspace / test_file
         target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -86,8 +84,8 @@ class IntegrationTestAgent(AiderAgent):
         message = (
             f"Write integration test for iteration {_iter_id}: {_iter_name}.\n\n"
             f"Test file: {test_file}\n\n"
-            "Use @SpringBootTest. Mock only external HTTP with @MockBean.\n"
-            "Use real implementations for everything else.\n"
+            "Use the appropriate testing framework and approach for this project.\n"
+            "Test the integration between components.\n"
             "Output the complete test file only."
         )
         logger.info("[integration_test] writing: %s", test_file)
@@ -104,16 +102,13 @@ class IntegrationTestAgent(AiderAgent):
     def write_e2e_tests(self, phase: int, docs_dir: Path) -> dict:
         """
         Write E2E tests for a completed phase.
-        Phase 1: CLI-level tests (bash).
-        Phase 2+: HTTP-level tests through the full stack.
+        Let the LLM decide the appropriate testing approach based on the project type.
         """
-        if phase == 1:
-            return self._write_cli_e2e(docs_dir)
-        return self._write_http_e2e(phase, docs_dir)
+        return self._write_e2e(phase, docs_dir)
 
-    def _write_cli_e2e(self, docs_dir: Path) -> dict:
-        """Bash-based E2E tests for the CLI phase."""
-        test_file = "cli/test_e2e.sh"
+    def _write_e2e(self, phase: int, docs_dir: Path) -> dict:
+        """E2E tests for the phase - let the LLM decide the approach."""
+        test_file = f"tests/e2e/phase_{phase}"
         target    = self.workspace / test_file
         target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -121,41 +116,14 @@ class IntegrationTestAgent(AiderAgent):
         uc_file = ai_dir / "use_cases.md"
         read_files = list(docs_dir.glob("*.md")) + ([uc_file] if uc_file.exists() else [])
 
-        iter_name = iteration.get('name', '')
-        iter_id = iteration['id']
-        message = f'Write integration test for iteration {iter_id}: {iter_name}.\n\n'
-        message += f'Test file: {test_file}\n\n'
-        message += 'Use @SpringBootTest. Mock only external HTTP with @MockBean.\n'
-        message += 'Use real implementations for everything else.\n'
-        message += 'Output the complete test file only.'
-        logger.info("[integration_test] writing CLI E2E: %s", test_file)
-        result = self.run(
-            message=message,
-            read_files=read_files,
-            edit_files=[target],
-            timeout=90,
-            log_callback=self.log_callback,
+        message = (
+            f"Write E2E tests for phase {phase}.\n\n"
+            f"Test file: {test_file}\n\n"
+            "Use the appropriate testing framework and approach for this project.\n"
+            "Test the full flow through the system.\n"
+            "Output the complete test file only."
         )
-        result["test_file"] = test_file
-        return result
-
-    def _write_http_e2e(self, phase: int, docs_dir: Path) -> dict:
-        test_file = f"api-gateway/src/test/java/com/localai/gateway/e2e/Phase{phase}E2ETest.java"
-        target    = self.workspace / test_file
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-        ai_dir  = self.workspace / ".ai"
-        uc_file = ai_dir / "use_cases.md"
-        read_files = list(docs_dir.glob("*.md")) + ([uc_file] if uc_file.exists() else [])
-
-        iter_name = iteration.get('name', '')
-        iter_id = iteration['id']
-        message = f'Write integration test for iteration {iter_id}: {iter_name}.\n\n'
-        message += f'Test file: {test_file}\n\n'
-        message += 'Use @SpringBootTest. Mock only external HTTP with @MockBean.\n'
-        message += 'Use real implementations for everything else.\n'
-        message += 'Output the complete test file only.'
-        logger.info("[integration_test] writing HTTP E2E phase %d: %s", phase, test_file)
+        logger.info("[integration_test] writing E2E phase %d: %s", phase, test_file)
         result = self.run(
             message=message,
             read_files=read_files,

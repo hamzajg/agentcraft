@@ -18,14 +18,15 @@ const EVENT_ICONS = {
   resumed: '▶',
   stopped: '⏹',
   error: '!',
-  agent_query: '?',
+  agent_query: '❓',
   agent_reply: '↩',
   agent_context: '≡',
-  agent_delegate: '→',
+  agent_delegate: '⇢',
   agent_broadcast: '◎',
   agent_status: '●',
   log: '…',
   clarification: '?',
+  directive_injected: '⇢',
 }
 
 const EVENT_COLORS = {
@@ -37,12 +38,18 @@ const EVENT_COLORS = {
   error: 'text-danger',
   agent_query: 'text-amber',
   agent_reply: 'text-teal',
+  agent_delegate: 'text-violet',
+  agent_broadcast: 'text-cyan',
+  agent_context: 'text-blue',
   agent_status: 'text-slate-400',
   clarification: 'text-amber',
   approval_gate: 'text-amber',
+  reviewer_verdict: 'text-amber',
   paused: 'text-slate-400',
   resumed: 'text-teal',
   stopped: 'text-danger',
+  file_written: 'text-teal',
+  directive_injected: 'text-violet',
 }
 
 export function EventFeed({ events = [], maxHeight = '400px' }) {

@@ -1,11 +1,12 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { Badge, Avatar } from './ui'
 
-export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply }) {
+export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply, busMessages = [] }) {
   const [showChat, setShowChat] = useState(false)
   const [replyText, setReplyText] = useState('')
   const [localReplies, setLocalReplies] = useState({}) // msgId -> reply text for optimistic updates
   const [showArchived, setShowArchived] = useState(false)
+  const [showBusMessages, setShowBusMessages] = useState(false) // toggle for agent-to-agent messages
   const messagesEndRef = useRef(null)
 
   const selectedChannel = channels.find(c => c.agent_id === activeAgent)
@@ -153,6 +154,21 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                     {statuses[activeAgent] || 'idle'}
                   </p>
                 </div>
+                {/* Toggle for agent-to-agent messages */}
+                <button
+                  onClick={() => setShowBusMessages(!showBusMessages)}
+                  className={`p-1.5 rounded-lg transition-colors ${
+                    showBusMessages ? 'bg-violet/20 text-violet' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                  title="Show agent-to-agent collaboration"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                </button>
               </>
             )}
           </>
@@ -178,9 +194,14 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                 const status = statuses[channel.agent_id] || 'idle'
                 const agentMessages = messages[channel.agent_id] || []
                 const hasPending = agentMessages.some(m => m.status === 'pending')
-                const lastMsg = [...agentMessages].sort((a, b) => 
+                const lastMsg = [...agentMessages].sort((a, b) =>
                   new Date(b.created_at) - new Date(a.created_at)
                 )[0]
+
+                // Check if this agent is involved in recent bus messages
+                const recentCollaboration = busMessages.filter(
+                  m => m.from_agent === channel.agent_id || m.to_agent === channel.agent_id
+                ).slice(0, 3)
 
                 return (
                   <button
@@ -201,9 +222,18 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                         <p className="text-sm font-medium text-slate-200 truncate">
                           {channel.agent_label || channel.agent_id}
                         </p>
-                        {hasPending && (
-                          <span className="w-2 h-2 rounded-full bg-amber animate-pulse flex-shrink-0" />
-                        )}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {recentCollaboration.length > 0 && status === 'running' && (
+                            <span className="text-[10px] text-violet/70 flex items-center gap-0.5" title="Active collaboration">
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                              </svg>
+                            </span>
+                          )}
+                          {hasPending && (
+                            <span className="w-2 h-2 rounded-full bg-amber animate-pulse" />
+                          )}
+                        </div>
                       </div>
                       <p className="text-xs text-slate-500 capitalize mt-0.5">{status}</p>
                       {lastMsg && (
@@ -224,6 +254,44 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       {showChat && activeAgent && (
         <>
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {/* Agent-to-Agent collaboration messages (toggleable) */}
+            {showBusMessages && busMessages.length > 0 && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Agent Collaboration</h3>
+                  <span className="text-xs text-slate-600">{busMessages.length} messages</span>
+                </div>
+                <div className="space-y-1.5">
+                  {busMessages.slice(0, 20).map((msg) => (
+                    <div key={msg.id} className="rounded-lg border border-slate-800/50 bg-slate-900/20 p-2 text-xs">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${
+                          msg.type === 'agent_query' ? 'bg-amber/10 text-amber' :
+                          msg.type === 'agent_reply' ? 'bg-teal/10 text-teal' :
+                          msg.type === 'agent_delegate' ? 'bg-violet/10 text-violet' :
+                          msg.type === 'agent_context' ? 'bg-blue/10 text-blue' :
+                          'bg-slate-700 text-slate-400'
+                        }`}>
+                          {msg.type.replace('agent_', '')}
+                        </span>
+                        <Avatar name={msg.from_agent} size="xs" />
+                        <span className="text-slate-400">@{msg.from_agent}</span>
+                        {msg.to_agent && (
+                          <>
+                            <span className="text-slate-600">→</span>
+                            <Avatar name={msg.to_agent} size="xs" />
+                            <span className="text-slate-400">@{msg.to_agent}</span>
+                          </>
+                        )}
+                        <span className="text-slate-600 ml-auto">{formatTime(msg.time)}</span>
+                      </div>
+                      <p className="text-slate-300">{msg.text}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Visible messages */}
             {visibleMessages.map((msg) => {
               const isCurrentPending = msg.id === currentPending?.id
