@@ -320,6 +320,7 @@ Respond with JSON:
         self._banner("AGENT TEAM PREPARATION")
 
         # ── Phase: RAG setup ──────────────────────────────────────────────────
+        self._setup_event_store()
         self._setup_rag()
         self._setup_llm()
         AgentBus.reset()          # fresh bus per build run
@@ -332,24 +333,36 @@ Respond with JSON:
 
     def run(self) -> RunLog:
         total_start = time.time()
+
+        # ── Setup event store (persistent) ────────────────────────────────
+        self._setup_event_store()
+
+        # ── Check for existing build state (resume detection) ────────────
+        stored_state = self._load_build_state()
+        if stored_state and self.start_from == 1:
+            status = stored_state.get("build_status", "idle")
+            if status in ("running", "paused", "stopped", "error"):
+                resume_from = stored_state.get("resume_from_iteration", 1)
+                if resume_from > 1:
+                    self._log(f"Detected previous {status} build — resuming from iteration {resume_from}")
+                    self.start_from = resume_from
+                    self._supervisor_status(f"Resuming from iteration {resume_from}. Previous build was {status}.")
+            elif status == "done":
+                self._log("Previous build completed — starting fresh")
+                self._supervisor_status("Previous build completed. Starting fresh run.")
+            # idle: no previous build, normal start
+
         self._banner("AUTONOMOUS AGENT TEAM — START")
         ES.emit("build_started", {
             "model": self.model, "framework": self.framework_id or "none",
         })
-
-        # Supervisor posts bootstrap status
-        resume_mode = self.start_from > 1
-        if resume_mode:
-            self._supervisor_status(f"Resuming build from iteration {self.start_from}. Checking project state...")
-        else:
-            self._supervisor_status("Bootstrapping project. Checking existing documentation...")
 
         # ── Phase: RAG setup ──────────────────────────────────────────────────
         self._setup_rag()
         self._setup_llm()
         AgentBus.reset()          # fresh bus per build run
         CC.reset()                # fresh control flags
-        ES.clear()                # fresh event ring
+        ES.clear()                # clear in-memory ring (file store persists)
         self._build_agents()
         self._register_all_on_bus()
         self.run_log.rag_enabled = self._rag is not None and self._rag.enabled
@@ -794,6 +807,23 @@ If no changes needed, return the original remaining iterations."""
     def _llm_text(self, prompt: str) -> str:
         """Query LLM and return text."""
         return self._llm.generate(prompt=prompt)
+
+    # ── Build state persistence ─────────────────────────────────────────
+
+    def _setup_event_store(self) -> None:
+        """Initialize the persistent file-backed event store."""
+        from core.event_stream import FileEventStore
+        store_path = self.workspace / ".ai" / "events.jsonl"
+        store = FileEventStore(store_path)
+        ES.set_file_store(store)
+        self._log(f"Event store: {store_path}")
+
+    def _load_build_state(self) -> Optional[dict]:
+        """Reconstruct current build state from the event log."""
+        store = ES.get_file_store()
+        if store is None:
+            return None
+        return store.reconstruct_state()
 
     def _decide_cicd_needed(self, phase: int, iteration: dict) -> dict:
         """Let the LLM decide if CI/CD infrastructure is needed for a phase."""

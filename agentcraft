@@ -8,6 +8,8 @@ Usage:
   agentcraft build                 Validate workspace, pull models — no execution
   agentcraft bootstrap             Run the agent workflow (auto-resumes from checkpoint)
   agentcraft resume --from N       Resume from a specific iteration
+  agentcraft build-state           Show current build state from event store
+  agentcraft reset-events          Clear event store for fresh start
   agentcraft comms                 Start the human↔agent comms UI
   agentcraft chat <agent>          Chat with a specific agent via CLI
   agentcraft monitor               Live system metrics monitor
@@ -287,8 +289,70 @@ def cmd_build(args):
 # ── helpers: checkpoint detection ───────────────────────────────────────────
 
 def _detect_checkpoint() -> int:
-    """Auto-detect the last completed iteration from run_log.json.
-    Returns the next iteration to start from (1 = fresh start)."""
+    """Auto-detect resume point from the persistent event store.
+
+    Reads .ai/events.jsonl and replays events to find the last
+    approved iteration. Returns the next iteration to start from.
+    Falls back to run_log.json if events.jsonl doesn't exist.
+    """
+    events_path = ROOT / ".ai" / "events.jsonl"
+
+    # Try event store first
+    if events_path.exists():
+        try:
+            import json
+            state = {
+                "completed_iterations": [],
+                "build_status": "idle",
+                "resume_from_iteration": 1,
+            }
+
+            with open(events_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    etype = ev.get("type", "")
+                    data = ev.get("data", {})
+
+                    if etype == "build_started":
+                        # New build boundary — reset tracking
+                        state["completed_iterations"] = []
+                        state["build_status"] = "running"
+
+                    elif etype == "build_done":
+                        state["build_status"] = "done"
+
+                    elif etype == "stopped":
+                        state["build_status"] = "stopped"
+
+                    elif etype == "error":
+                        state["build_status"] = "error"
+
+                    elif etype == "iter_done":
+                        iter_id = data.get("id")
+                        approved = data.get("approved", False)
+                        if iter_id is not None:
+                            if approved:
+                                if iter_id not in state["completed_iterations"]:
+                                    state["completed_iterations"].append(iter_id)
+
+            # Determine resume point from last build's state
+            if state["build_status"] in ("done",):
+                return 1  # Completed — fresh start
+            if state["completed_iterations"]:
+                return max(state["completed_iterations"]) + 1
+            return 1
+
+        except Exception as e:
+            print(f"  Warning: Event store read failed: {e}")
+
+    # Fallback: read run_log.json
     log_path = ROOT / ".ai" / "run_log.json"
     if not log_path.exists():
         return 1
@@ -298,7 +362,6 @@ def _detect_checkpoint() -> int:
         iterations = data.get("iterations", [])
         if not iterations:
             return 1
-        # Find the last approved iteration
         last_approved = 0
         for it in iterations:
             if it.get("approved"):
@@ -820,6 +883,76 @@ You are a specialised AI agent in an autonomous development team.
 """)
 
 
+# ── build-state / reset-events ─────────────────────────────────────────────
+
+def cmd_build_state(args):
+    """Show current build state from event store."""
+    events_path = ROOT / ".ai" / "events.jsonl"
+    if not events_path.exists():
+        print("  No event store found — no build history")
+        return
+
+    checkpoint = _detect_checkpoint()
+    state = {}
+    try:
+        import json
+        completed = []
+        build_status = "idle"
+        with open(events_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                etype = ev.get("type", "")
+                data = ev.get("data", {})
+                if etype == "build_started":
+                    completed = []
+                    build_status = "running"
+                elif etype == "build_done":
+                    build_status = "done"
+                elif etype == "iter_done" and data.get("approved"):
+                    iid = data.get("id")
+                    if iid and iid not in completed:
+                        completed.append(iid)
+        state = {"build_status": build_status, "completed_iterations": completed}
+    except Exception:
+        pass
+
+    print(f"\n  {'='*40}")
+    print(f"  Build State")
+    print(f"  {'='*40}")
+    print(f"  Status:        {state.get('build_status', 'unknown')}")
+    print(f"  Iterations:    {len(state.get('completed_iterations', []))} approved")
+    print(f"  Resume from:   iteration {checkpoint}")
+    print(f"  Events file:   {events_path}")
+    if events_path.exists():
+        size = events_path.stat().st_size
+        print(f"  Events size:   {size:,} bytes")
+    print()
+
+
+def cmd_reset_events(args):
+    """Clear the event store — starts fresh."""
+    events_path = ROOT / ".ai" / "events.jsonl"
+    if not events_path.exists():
+        print("  No event store to clear")
+        return
+
+    if not args.force:
+        ans = input(f"  Clear {events_path}? [y/N] ").strip().lower()
+        if ans != "y":
+            print("  Aborted.")
+            return
+
+    events_path.unlink()
+    print(f"  Cleared: {events_path}")
+    print("  Next 'agentcraft bootstrap' will start fresh.")
+
+
 # ── frameworks / skills info ──────────────────────────────────────────────────
 
 def cmd_frameworks(args):
@@ -988,6 +1121,14 @@ def main():
     p = subs.add_parser("skills", help="List available skills")
     p.add_argument("--framework", default=None)
     p.set_defaults(func=cmd_skills)
+
+    # ── build-state / reset-events ────────────────────────────────────────
+    p = subs.add_parser("build-state", help="Show current build state from event store")
+    p.set_defaults(func=cmd_build_state)
+
+    p = subs.add_parser("reset-events", help="Clear the event store (fresh start)")
+    p.add_argument("--force", action="store_true", help="Skip confirmation")
+    p.set_defaults(func=cmd_reset_events)
 
     # ── parse and dispatch ────────────────────────────────────────────────────
     args = parser.parse_args()
