@@ -229,8 +229,18 @@ class PlannerAgent(AiderAgent):
 
         files_expected = iteration.get("files_expected", [])
         if not files_expected:
-            logger.warning("[planner] iteration %d has no files_expected", iteration.get("id"))
-            return []
+            logger.warning("[planner] iteration %d has no files_expected — creating minimal task", iteration.get("id"))
+            # Create a minimal task based on iteration goal
+            return [{
+                "id": f"iter{iteration.get('id')}_task1",
+                "iteration_id": iteration.get("id"),
+                "agent": "backend_dev",
+                "file": "main.py",
+                "description": iteration.get("goal", "Implement iteration"),
+                "context_files": [],
+                "needs_test": False,
+                "acceptance_criteria": iteration.get("acceptance_criteria", ["runs without errors"])
+            }]
 
         self._log(f"Decomposing iteration {iteration.get('id')} into tasks")
 
@@ -241,54 +251,82 @@ class PlannerAgent(AiderAgent):
         if spec_file.exists():
             context_files.append(spec_file)
 
+        # Build concise context from files
+        file_contexts = []
+        for f in context_files[:5]:  # Limit to avoid overwhelming context
+            try:
+                content = f.read_text()[:500]
+                file_contexts.append(f"### {f.name}\n{content}")
+            except Exception:
+                pass
+
         prompt = f"""Decompose this iteration into concrete tasks.
 
 ## Iteration
 - ID: {iteration.get('id')}
-- Phase: {iteration.get('phase')}
+- Phase: {iteration.get('phase', 1)}
+- Name: {iteration.get('name', 'unnamed')}
 - Goal: {iteration.get('goal', 'No goal specified')}
 - Files Expected: {json.dumps(files_expected)}
 
-## Available Agents
-{json.dumps(self._get_available_agents(), indent=2)}
+## Acceptance Criteria
+{json.dumps(iteration.get('acceptance_criteria', []))}
 
-## Context Files
-{json.dumps([str(f) for f in context_files])}
+## Available Agents
+- backend_dev: implements application code (any language/framework)
+- test_dev: writes unit/integration tests
+- config_agent: creates configuration files (settings, env, etc.)
+- docs_agent: writes documentation
+- cicd: creates CI/CD and infrastructure files
 
 ## Task
-For each file in files_expected:
-1. Determine which agent should implement it
-2. Decide if it needs a paired test
-3. Create clear acceptance criteria
+For each file in files_expected, create ONE task:
+1. Assign the most appropriate agent
+2. Write a clear description of what to implement
+3. Define 2-3 acceptance criteria
 
-Decisions should be based on:
-- File purpose and content type
-- Dependencies between files
-- Test coverage needs
-- Agent capabilities
+### Output Format (STRICT):
+You MUST output ONLY a valid JSON array. NO markdown, NO code blocks, NO explanations.
+The response must be parseable as JSON starting with '[' and ending with ']'.
 
-Output ONLY a valid JSON array of tasks:
-```json
+### JSON Schema:
 [
   {{
     "id": "iter1_task1",
     "iteration_id": {iteration.get('id')},
-    "agent": "backend_dev|test_dev|docs_agent|...",
-    "file": "path/to/file",
-    "description": "What to implement",
-    "context_files": ["related_file1", "related_file2"],
-    "needs_test": true|false,
-    "test_file": "path/to/test" (only if needs_test is true),
+    "agent": "backend_dev|test_dev|config_agent|docs_agent|cicd",
+    "file": "path/to/file.py",
+    "description": "Clear description of what to implement",
+    "context_files": ["file1.md", "file2.md"],
+    "needs_test": false,
     "acceptance_criteria": ["criteria1", "criteria2"]
   }}
 ]
-```
 
-Consider TDD: if a file needs testing, include a paired test task before it.
-"""
+### Example:
+[
+  {{
+    "id": "iter1_task1",
+    "iteration_id": 1,
+    "agent": "backend_dev",
+    "file": "main.py",
+    "description": "Create main application entry point",
+    "context_files": ["spec.md"],
+    "needs_test": false,
+    "acceptance_criteria": ["file created", "runs without errors"]
+  }}
+]
+
+Now create tasks for these files: {json.dumps(files_expected)}
+Output ONLY the JSON array, nothing else."""
 
         result = self._run_step(prompt, context_files, label="decompose iteration", timeout=180)
         tasks = self._parse_tasks(result.get("output", "[]"))
+        
+        # Fallback: if LLM returned empty, create basic tasks from files_expected
+        if not tasks:
+            logger.warning("[planner] LLM returned empty tasks — creating basic tasks from files_expected")
+            tasks = self._minimal_tasks_from_files(iteration, files_expected)
 
         tasks_file = ai_dir / f"tasks_iter_{iteration['id']}.json"
         tasks_file.write_text(json.dumps(tasks, indent=2))
@@ -297,16 +335,72 @@ Consider TDD: if a file needs testing, include a paired test task before it.
         self._log(f"Decomposed iteration {iteration.get('id')} into {len(tasks)} tasks")
         return tasks
 
+    def _minimal_tasks_from_files(self, iteration: dict, files: list) -> list[dict]:
+        """Create basic tasks from file list when LLM returns empty."""
+        tasks = []
+        for i, file_path in enumerate(files, 1):
+            # Determine agent based on file type
+            if file_path.endswith(('.py', '.js', '.ts', '.java', '.go', '.rb')):
+                agent = "backend_dev"
+            elif file_path.endswith(('.md', '.txt', '.rst')):
+                agent = "docs_agent"
+            elif file_path.endswith(('.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.env')):
+                agent = "config_agent"
+            elif 'test' in file_path.lower() or 'spec' in file_path.lower():
+                agent = "test_dev"
+            else:
+                agent = "backend_dev"
+            
+            tasks.append({
+                "id": f"iter{iteration.get('id')}_task{i}",
+                "iteration_id": iteration.get('id'),
+                "agent": agent,
+                "file": file_path,
+                "description": f"Create {file_path} — {iteration.get('goal', 'implement iteration')}",
+                "context_files": [],
+                "needs_test": False,
+                "acceptance_criteria": iteration.get("acceptance_criteria", ["file created", "basic functionality works"])[:2]
+            })
+        return tasks
+
     def _parse_tasks(self, output: str) -> list[dict]:
+        """Parse task JSON from LLM output with robust error handling."""
+        if not output or not output.strip():
+            logger.warning("[planner] _parse_tasks: empty output received")
+            return []
+
+        output_stripped = output.strip()
+        logger.info("[planner] _parse_tasks: output length=%d, first 100 chars=%s",
+                    len(output), output_stripped[:100])
+
+        # Try to extract JSON from markdown code blocks first
         json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
         if json_match:
             try:
-                return json.loads(json_match.group(1))
-            except json.JSONDecodeError:
-                pass
+                tasks = json.loads(json_match.group(1))
+                logger.info("[planner] _parse_tasks: successfully parsed from markdown code block, %d tasks", len(tasks))
+                return tasks
+            except json.JSONDecodeError as e:
+                logger.warning("[planner] _parse_tasks: failed to parse markdown code block JSON: %s", e)
+
+        # Try to find any JSON array in the output
+        array_match = re.search(r'\[[\s\S]*\]', output_stripped)
+        if array_match:
+            try:
+                tasks = json.loads(array_match.group(0))
+                logger.info("[planner] _parse_tasks: successfully parsed JSON array, %d tasks", len(tasks))
+                return tasks
+            except json.JSONDecodeError as e:
+                logger.warning("[planner] _parse_tasks: failed to parse JSON array: %s", e)
+
+        # Try parsing the entire output as JSON
         try:
-            return json.loads(output)
-        except json.JSONDecodeError:
+            tasks = json.loads(output_stripped)
+            logger.info("[planner] _parse_tasks: successfully parsed entire output as JSON, %d tasks", len(tasks))
+            return tasks
+        except json.JSONDecodeError as e:
+            logger.error("[planner] _parse_tasks: all parsing attempts failed. Error: %s. Output was: %s",
+                        e, output_stripped[:500])
             return []
 
     def plan_single_file(
