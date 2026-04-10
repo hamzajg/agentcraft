@@ -97,13 +97,8 @@ class FileEventStore:
         return list(reversed(events))
 
     def clear(self) -> None:
-        """Clear the in-memory ring buffer only. File store is append-only."""
-        # Don't delete the file — it's the persistent history
-        if self._remote_url:
-            try:
-                httpx.post(f"{self._remote_url}/api/live/reset", timeout=2)
-            except Exception:
-                pass
+        """Clear the event store. File store is append-only, so nothing to clear here."""
+        pass
 
     def reset_file(self) -> None:
         """Delete the file store — use for a completely fresh start."""
