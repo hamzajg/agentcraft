@@ -1,9 +1,10 @@
 """
 docs_agent/agent.py — writes markdown documentation files.
-Follows the same incremental step + user-controlled retry pattern as all agents.
+Follows the same smart failure classification + auto-retry pattern as all agents.
 """
 
 import logging
+import re
 from pathlib import Path
 
 from core.base import AiderAgent
@@ -14,6 +15,7 @@ SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__fil
 
 
 def _ensure_file(path: Path) -> Path:
+    """Ensure file exists with parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.touch()
@@ -21,6 +23,7 @@ def _ensure_file(path: Path) -> Path:
 
 
 def _file_has_content(path: Path) -> bool:
+    """Check if file exists and has meaningful content."""
     return path.exists() and path.stat().st_size > 0
 
 
@@ -54,31 +57,123 @@ class DocsAgent(AiderAgent):
             **kwargs,
         )
         self._step_results = []
+        self._retry_count = {}
 
     def get_step_results(self) -> list[dict]:
+        """Return per-step results for reporting to orchestrator."""
         return list(self._step_results)
 
     def _run_step(self, message: str, read_files: list[Path],
                   output_path: Path, label: str, timeout: int = 180) -> dict:
+        """
+        Run a single aider step with auto-retry for non-critical failures.
+        """
+        MAX_AUTO_RETRIES = 2
+
+        attempt = self._retry_count.get(label, 0) + 1
+        self._retry_count[label] = attempt
+
+        logger.info("[docs_agent] step %d: %s", attempt, label)
+
         result = self.run(
             message=message, read_files=read_files, edit_files=[output_path],
             timeout=timeout, log_callback=self.log_callback,
         )
         success = result.get("success", False) and _file_has_content(output_path)
-        self._step_results.append({"label": label, "success": success, "file": str(output_path)})
+
         if not success:
-            logger.warning("[docs_agent] step FAILED: %s", label)
+            classification = self._classify_failure(result, output_path, label)
+            result["severity"] = classification["severity"]
+            result["auto_retry"] = classification["auto_retry"]
+            result["needs_user_input"] = classification["needs_user_input"]
+            result["retry_count"] = attempt
+            result["escalated_message"] = classification.get("escalated_message", "")
+            result["read_files"] = read_files
+            result["timeout"] = timeout
+
+            if classification["auto_retry"] and attempt <= MAX_AUTO_RETRIES:
+                logger.info("[docs_agent] auto-retrying '%s' (attempt %d/%d, severity=%s)",
+                            label, attempt + 1, MAX_AUTO_RETRIES + 1, classification["severity"])
+                retry_msg = classification.get("escalated_message") or message
+                return self._run_step(retry_msg, read_files, output_path, label, timeout)
+
+            if classification["needs_user_input"]:
+                result["needs_user_input"] = True
+        else:
+            result["severity"] = "success"
+            result["auto_retry"] = False
+            result["needs_user_input"] = False
+            result["retry_count"] = attempt
+
+        self._step_results.append({
+            "label": label, "success": success, "file": str(output_path),
+            "exit_code": result.get("exit_code", -1), "severity": result.get("severity", "?"),
+            "attempt": attempt,
+        })
+        if success:
+            logger.info("[docs_agent] step OK: %s", label)
+        else:
+            logger.warning("[docs_agent] step FAILED [%s]: %s (attempt %d)",
+                           result.get("severity", "?"), label, attempt)
         return result
 
-    def _ask_user_retry(self, step_label: str, error_detail: str) -> str:
+    def _classify_failure(self, result: dict, output_path: Path, label: str) -> dict:
+        import re
+        exit_code = result.get("exit_code", -1)
+        stderr = result.get("stderr", "")
+        content = output_path.read_text() if output_path.exists() else ""
+        if exit_code != 0 and (exit_code == -1 or "timeout" in stderr.lower() or exit_code >= 128):
+            return {"severity": "transient", "auto_retry": True, "needs_user_input": False, "escalated_message": ""}
+        if _file_has_content(output_path) and self._looks_like_hallucination(content):
+            return {"severity": "hallucination", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
+        if exit_code == 0 and not _file_has_content(output_path):
+            return {"severity": "refusal", "auto_retry": True, "needs_user_input": False,
+                    "escalated_message": "CRITICAL: You MUST write the complete file content. No placeholders or stubs."}
+        return {"severity": "critical", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
+
+    def _looks_like_hallucination(self, content: str) -> bool:
+        import re
+        if not content or len(content.strip()) < 20:
+            return True
+        lines = content.splitlines()
+        placeholder_patterns = [r"TODO", r"placeholder", r"stub", r"fill.*in", r"coming soon",
+                                r"auto-generat", r"skipped", r"incomplete", r"not (yet|currently) (implemented|available|generated)", r"_.*_"]
+        placeholder_lines = sum(1 for line in lines for p in placeholder_patterns if re.search(p, line, re.IGNORECASE))
+        if len(lines) > 3 and placeholder_lines / len(lines) > 0.4:
+            return True
+        if len(content.strip()) < 100:
+            return True
+        if all(line.startswith("#") or line.startswith("//") or line.strip() == "" for line in lines):
+            return True
+        return False
+
+    def _ask_user_retry(self, step_label: str, error_detail: str, severity: str) -> str:
+        """Ask user what to do after a critical or hallucination failure."""
+        severity_label = severity.upper()
         reply = self.ask(
-            question=f"Step '{step_label}' failed: {error_detail}. What should I do?",
-            suggestions=["Retry this step", "Skip this step", "Abort"],
-            timeout=300,
+            question=f"Step '{step_label}' failed [{severity_label}]: {error_detail}. What should I do?",
+            suggestions=[
+                "Retry with more explicit instructions",
+                "Skip this step and continue",
+                "Abort — I'll fix this manually",
+            ],
+            timeout=600,
         )
         return (reply or "").lower().strip()
 
     def implement(self, task: dict, docs_dir: Path) -> dict:
+        self.report_status("running")
+        self._step_results = []
+        self._retry_count = {}
+        try:
+            result = self._implement_impl(task, docs_dir)
+        except Exception:
+            logger.exception("[docs_agent] unhandled error in implement")
+            result = {"success": False, "file": task.get("file", "unknown"), "error": "unhandled exception"}
+        self.report_status("idle")
+        return result
+
+    def _implement_impl(self, task: dict, docs_dir: Path) -> dict:
         target_file = _ensure_file(self.workspace / task["file"])
         target_file.write_text("")
 
@@ -101,19 +196,24 @@ class DocsAgent(AiderAgent):
         logger.info("[docs_agent] writing: %s", task["file"])
 
         result = self._run_step(message, read_files, target_file, "write doc", timeout=120)
+
         if not result.get("success"):
-            decision = self._ask_user_retry("write doc", "aider could not write documentation")
-            if "abort" in decision:
-                result["success"] = False
-                return result
-            if "skip" in decision:
-                target_file.write_text(f"# {task['file']}\n# Auto-generation skipped.\n")
-                result["success"] = True
-            else:
-                result = self._run_step(
-                    f"CRITICAL: Write the complete {task['file']} documentation.",
-                    read_files, target_file, "write doc (retry)", timeout=120,
-                )
+            if result.get("needs_user_input"):
+                decision = self._ask_user_retry("write doc",
+                                                result.get("stderr", "no output"),
+                                                result.get("severity", "critical"))
+                if "abort" in decision:
+                    result["success"] = False
+                    return result
+                if "skip" in decision:
+                    target_file.write_text(f"# {task['file']}\n# Auto-generation skipped.\n")
+                    result["success"] = True
+                else:
+                    escalated = result.get("escalated_message", "") or f"CRITICAL: WRITE the complete {task['file']} documentation with real content."
+                    result = self._run_step(escalated, read_files, target_file,
+                                            "write doc (user-retry)", timeout=120)
+            elif result.get("auto_retry"):
+                pass  # Already auto-retried
         return result
 
     def generate_phase0_docs(
@@ -123,38 +223,46 @@ class DocsAgent(AiderAgent):
         architecture: str = "monolith",
     ) -> dict[str, Path]:
         self.report_status("running")
+        self._step_results = []
+        self._retry_count = {}
         docs_dir.mkdir(parents=True, exist_ok=True)
         generated = {}
 
-        requirements_path = docs_dir / "requirements.md"
-        if self._step_generate_requirements(user_input, architecture, requirements_path):
-            generated["requirements"] = requirements_path
-            self.emit_file_written(requirements_path)
+        try:
+            requirements_path = docs_dir / "requirements.md"
+            if self._step_generate_requirements(user_input, architecture, requirements_path):
+                generated["requirements"] = requirements_path
+                self.emit_file_written(requirements_path)
 
-        architecture_path = docs_dir / "architecture.md"
-        ctx = [requirements_path] if "requirements" in generated else []
-        if self._step_generate_architecture(user_input, architecture, architecture_path, ctx):
-            generated["architecture"] = architecture_path
-            self.emit_file_written(architecture_path)
+            architecture_path = docs_dir / "architecture.md"
+            ctx = [requirements_path] if "requirements" in generated else []
+            if self._step_generate_architecture(user_input, architecture, architecture_path, ctx):
+                generated["architecture"] = architecture_path
+                self.emit_file_written(architecture_path)
 
-        blueprint_path = docs_dir / "blueprint.md"
-        ctx2 = [f for f in [requirements_path, architecture_path] if f in generated.values()]
-        if self._step_generate_blueprint(user_input, architecture, blueprint_path, ctx2):
-            generated["blueprint"] = blueprint_path
-            self.emit_file_written(blueprint_path)
+            blueprint_path = docs_dir / "blueprint.md"
+            ctx2 = [f for f in [requirements_path, architecture_path] if f in generated.values()]
+            if self._step_generate_blueprint(user_input, architecture, blueprint_path, ctx2):
+                generated["blueprint"] = blueprint_path
+                self.emit_file_written(blueprint_path)
 
-        self.share_context("phase0_docs_generated", {
-            "requirements": str(requirements_path),
-            "architecture": str(architecture_path),
-            "blueprint": str(blueprint_path),
-        })
+            self.share_context("phase0_docs_generated", {
+                "requirements": str(requirements_path),
+                "architecture": str(architecture_path),
+                "blueprint": str(blueprint_path),
+            })
+        except Exception:
+            logger.exception("[docs_agent] unhandled error in generate_phase0_docs")
+        finally:
+            self.report_status("idle")
 
-        self.report_status("idle")
         logger.info("[docs_agent] Phase 0: generated %d documentation files", len(generated))
         return generated
 
     def _step_generate_requirements(self, user_input, architecture, output_path):
+        """Step 1: Generate requirements.md."""
         _ensure_file(output_path).write_text("")
+        label = "generate requirements"
         prompt = f"""Write requirements.md for this project.
 
 ## User's Vision
@@ -196,22 +304,28 @@ Explicitly state what is NOT included in MVP.
 
 Write this for an AI development team. Be precise but concise."""
 
-        result = self._run_step(prompt, [], output_path, "generate requirements", timeout=180)
+        result = self._run_step(prompt, [], output_path, label, timeout=180)
+
         if not result.get("success"):
-            decision = self._ask_user_retry("generate requirements", "aider could not write requirements")
-            if "abort" in decision:
-                return False
-            if "skip" in decision:
-                output_path.write_text("# Requirements\n# Auto-generation skipped.\n")
-                return True
-            result = self._run_step(
-                "CRITICAL: Write comprehensive requirements.md with all sections.",
-                [], output_path, "generate requirements (retry)", timeout=180,
-            )
+            if result.get("needs_user_input"):
+                decision = self._ask_user_retry(label,
+                                                result.get("stderr", "no output"),
+                                                result.get("severity", "critical"))
+                if "abort" in decision:
+                    return False
+                if "skip" in decision:
+                    output_path.write_text("# Requirements\n# Auto-generation skipped.\n")
+                    return True
+                escalated = result.get("escalated_message", "") or "CRITICAL: Write comprehensive requirements.md with all sections."
+                result = self._run_step(escalated, [], output_path, f"{label} (user-retry)", timeout=180)
+            elif result.get("auto_retry"):
+                pass  # Already auto-retried
         return result.get("success", False) or _file_has_content(output_path)
 
     def _step_generate_architecture(self, user_input, architecture, output_path, context):
+        """Step 2: Generate architecture.md."""
         _ensure_file(output_path).write_text("")
+        label = "generate architecture"
         prompt = f"""Write architecture.md for this project.
 
 ## User's Vision
@@ -224,7 +338,7 @@ Write this for an AI development team. Be precise but concise."""
 Create an architecture document with these sections. Let the LLM decide what's appropriate for this project:
 
 ### Architecture Style
-- Overall pattern
+-Overall pattern
 - Key characteristics and trade-offs made
 
 ### System Components
@@ -261,22 +375,28 @@ If applicable:
 Write this for an AI development team. Make it actionable.
 Let the LLM decide which sections are relevant and what content to include."""
 
-        result = self._run_step(prompt, context, output_path, "generate architecture", timeout=180)
+        result = self._run_step(prompt, context, output_path, label, timeout=180)
+
         if not result.get("success"):
-            decision = self._ask_user_retry("generate architecture", "aider could not write architecture")
-            if "abort" in decision:
-                return False
-            if "skip" in decision:
-                output_path.write_text("# Architecture\n# Auto-generation skipped.\n")
-                return True
-            result = self._run_step(
-                "CRITICAL: Write the complete architecture.md document.",
-                context, output_path, "generate architecture (retry)", timeout=180,
-            )
+            if result.get("needs_user_input"):
+                decision = self._ask_user_retry(label,
+                                                result.get("stderr", "no output"),
+                                                result.get("severity", "critical"))
+                if "abort" in decision:
+                    return False
+                if "skip" in decision:
+                    output_path.write_text("# Architecture\n# Auto-generation skipped.\n")
+                    return True
+                escalated = result.get("escalated_message", "") or "CRITICAL: Write the complete architecture.md document."
+                result = self._run_step(escalated, context, output_path, f"{label} (user-retry)", timeout=180)
+            elif result.get("auto_retry"):
+                pass  # Already auto-retried
         return result.get("success", False) or _file_has_content(output_path)
 
     def _step_generate_blueprint(self, user_input, architecture, output_path, context):
+        """Step 3: Generate blueprint.md."""
         _ensure_file(output_path).write_text("")
+        label = "generate blueprint"
         prompt = f"""Write blueprint.md for this project.
 
 ## User's Vision
@@ -335,18 +455,22 @@ What constitutes "complete" for each phase:
 
 This guides the AI agent team's work. Make phases clear and actionable."""
 
-        result = self._run_step(prompt, context, output_path, "generate blueprint", timeout=180)
+        result = self._run_step(prompt, context, output_path, label, timeout=180)
+
         if not result.get("success"):
-            decision = self._ask_user_retry("generate blueprint", "aider could not write blueprint")
-            if "abort" in decision:
-                return False
-            if "skip" in decision:
-                output_path.write_text("# Blueprint\n# Auto-generation skipped.\n")
-                return True
-            result = self._run_step(
-                "CRITICAL: Write the complete blueprint.md document.",
-                context, output_path, "generate blueprint (retry)", timeout=180,
-            )
+            if result.get("needs_user_input"):
+                decision = self._ask_user_retry(label,
+                                                result.get("stderr", "no output"),
+                                                result.get("severity", "critical"))
+                if "abort" in decision:
+                    return False
+                if "skip" in decision:
+                    output_path.write_text("# Blueprint\n# Auto-generation skipped.\n")
+                    return True
+                escalated = result.get("escalated_message", "") or "CRITICAL: Write the complete blueprint.md document."
+                result = self._run_step(escalated, context, output_path, f"{label} (user-retry)", timeout=180)
+            elif result.get("auto_retry"):
+                pass  # Already auto-retried
         return result.get("success", False) or _file_has_content(output_path)
 
     def generate_reference_docs(self, docs_dir: Path, legacy_paths: list[Path]) -> None:

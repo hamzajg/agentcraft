@@ -970,9 +970,14 @@ Respond with JSON:
         step_results = self.spec_agent.get_step_results()
         failed_steps = [s for s in step_results if not s["success"]]
         if failed_steps:
-            failed_labels = ", ".join(s["label"] for s in failed_steps)
+            failed_labels = ", ".join(f"{s['label']} [{s.get('severity', '?')}]" for s in failed_steps)
             logger.warning("[orchestrator] spec phase failed steps: %s", failed_labels)
-            self._comms.info(f"Spec generation had {len(failed_steps)} failed step(s): {failed_labels}")
+            # Determine if any need user input (hallucination/critical)
+            user_blocking = [s for s in failed_steps if s.get("severity") in ("hallucination", "critical")]
+            if user_blocking:
+                self._comms.info(f"Spec generation requires user input: {len(user_blocking)} critical step(s)")
+            else:
+                self._comms.info(f"Spec generation had {len(failed_steps)} failed step(s) — auto-retries exhausted")
 
         # Last-resort: create stubs for empty files
         ai_dir = self.workspace / ".ai"

@@ -1,6 +1,6 @@
 """
 reviewer/agent.py — reads completed task output and decides APPROVED or REWORK.
-Follows the same incremental step + user-controlled retry pattern as all agents.
+Follows the same smart failure classification + auto-retry pattern as all agents.
 """
 
 import logging
@@ -24,6 +24,19 @@ class ReviewVerdict:
     @property
     def label(self) -> str:
         return "APPROVED" if self.approved else "REWORK"
+
+
+def _ensure_file(path: Path) -> Path:
+    """Ensure file exists with parent directories."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.touch()
+    return path
+
+
+def _file_has_content(path: Path) -> bool:
+    """Check if file exists and has meaningful content."""
+    return path.exists() and path.stat().st_size > 0
 
 
 class ReviewerAgent(AiderAgent):
@@ -56,24 +69,103 @@ class ReviewerAgent(AiderAgent):
             **kwargs,
         )
         self._step_results = []
+        self._retry_count = {}
 
     def get_step_results(self) -> list[dict]:
+        """Return per-step results for reporting to orchestrator."""
         return list(self._step_results)
 
     def _run_step(self, message: str, read_files: list[Path],
                   label: str, timeout: int = 90) -> dict:
-        result = self.run_readonly(message=message, read_files=read_files, timeout=timeout)
-        success = result is not None and len(result.strip()) > 0
-        self._step_results.append({"label": label, "success": success, "file": ""})
-        if not success:
-            logger.warning("[reviewer] step FAILED: %s", label)
-        return result
+        """
+        Run a single readonly review step with auto-retry for non-critical failures.
+        """
+        MAX_AUTO_RETRIES = 2
 
-    def _ask_user_retry(self, step_label: str, error_detail: str) -> str:
+        attempt = self._retry_count.get(label, 0) + 1
+        self._retry_count[label] = attempt
+
+        logger.info("[reviewer] step %d: %s", attempt, label)
+
+        result = self.run_readonly(message=message, read_files=read_files, timeout=timeout)
+
+        output_text = result if isinstance(result, str) else (result.get("output", "") if isinstance(result, dict) else "")
+        success = output_text and len(output_text.strip()) > 0
+
+        if not success:
+            classification = self._classify_failure_for_review(output_text, label)
+            result_dict = result if isinstance(result, dict) else {"output": output_text, "exit_code": -1, "stderr": ""}
+            result_dict["severity"] = classification["severity"]
+            result_dict["auto_retry"] = classification["auto_retry"]
+            result_dict["needs_user_input"] = classification["needs_user_input"]
+            result_dict["retry_count"] = attempt
+            result_dict["escalated_message"] = classification.get("escalated_message", "")
+
+            if classification["auto_retry"] and attempt <= MAX_AUTO_RETRIES:
+                logger.info("[reviewer] auto-retrying '%s' (attempt %d/%d, severity=%s)",
+                            label, attempt + 1, MAX_AUTO_RETRIES + 1, classification["severity"])
+                retry_msg = classification.get("escalated_message") or message
+                return self._run_step(retry_msg, read_files, label, timeout)
+
+            if classification["needs_user_input"]:
+                result_dict["needs_user_input"] = True
+        else:
+            result_dict = result if isinstance(result, dict) else {"output": result, "exit_code": 0, "stderr": ""}
+            result_dict["severity"] = "success"
+            result_dict["auto_retry"] = False
+            result_dict["needs_user_input"] = False
+            result_dict["retry_count"] = attempt
+
+        self._step_results.append({
+            "label": label, "success": success, "file": "",
+            "exit_code": result_dict.get("exit_code", -1), "severity": result_dict.get("severity", "?"),
+            "attempt": attempt,
+        })
+        if success:
+            logger.info("[reviewer] step OK: %s", label)
+        else:
+            logger.warning("[reviewer] step FAILED [%s]: %s (attempt %d)",
+                           result_dict.get("severity", "?"), label, attempt)
+        return result_dict
+
+    def _classify_failure_for_review(self, output_text: str, label: str) -> dict:
+        import re
+        if not output_text or len(output_text.strip()) < 20:
+            return {"severity": "transient", "auto_retry": True, "needs_user_input": False, "escalated_message": ""}
+        if self._looks_like_hallucination(output_text):
+            return {"severity": "hallucination", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
+        if len(output_text.strip()) < 100:
+            return {"severity": "refusal", "auto_retry": True, "needs_user_input": False,
+                    "escalated_message": "CRITICAL: You MUST provide a complete review. No placeholders or stubs."}
+        return {"severity": "critical", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
+
+    def _looks_like_hallucination(self, content: str) -> bool:
+        import re
+        if not content or len(content.strip()) < 20:
+            return True
+        lines = content.splitlines()
+        placeholder_patterns = [r"TODO", r"placeholder", r"stub", r"fill.*in", r"coming soon",
+                                r"auto-generat", r"skipped", r"incomplete", r"not (yet|currently) (implemented|available|generated)", r"_.*_"]
+        placeholder_lines = sum(1 for line in lines for p in placeholder_patterns if re.search(p, line, re.IGNORECASE))
+        if len(lines) > 3 and placeholder_lines / len(lines) > 0.4:
+            return True
+        if len(content.strip()) < 100:
+            return True
+        if all(line.startswith("#") or line.startswith("//") or line.strip() == "" for line in lines):
+            return True
+        return False
+
+    def _ask_user_retry(self, step_label: str, error_detail: str, severity: str) -> str:
+        """Ask user what to do after a critical or hallucination failure."""
+        severity_label = severity.upper()
         reply = self.ask(
-            question=f"Step '{step_label}' failed: {error_detail}. What should I do?",
-            suggestions=["Retry this step", "Skip this step", "Abort"],
-            timeout=300,
+            question=f"Step '{step_label}' failed [{severity_label}]: {error_detail}. What should I do?",
+            suggestions=[
+                "Retry with more explicit instructions",
+                "Skip this step and continue",
+                "Abort — I'll fix this manually",
+            ],
+            timeout=600,
         )
         return (reply or "").lower().strip()
 
@@ -93,6 +185,18 @@ class ReviewerAgent(AiderAgent):
         return "Reviewer LLM not available."
 
     def review(self, task: dict, docs_dir: Path) -> ReviewVerdict:
+        self.report_status("running")
+        self._step_results = []
+        self._retry_count = {}
+        try:
+            result = self._review_impl(task, docs_dir)
+        except Exception:
+            logger.exception("[reviewer] unhandled error in review")
+            result = ReviewVerdict(approved=False, reason="Unhandled exception", suggestions=["Manual review needed"])
+        self.report_status("idle")
+        return result
+
+    def _review_impl(self, task: dict, docs_dir: Path) -> ReviewVerdict:
         target_file = self.workspace / task["file"]
         if not target_file.exists():
             logger.warning("[reviewer] file not found: %s", target_file)
@@ -127,20 +231,38 @@ REWORK: <one-line reason>
 - <specific fix needed>
 """
         output = self._run_step(message, read_files, "review task", timeout=90)
-        if not output or len(output.strip()) == 0:
-            decision = self._ask_user_retry("review task", "reviewer returned no verdict")
-            if "abort" in decision:
-                return ReviewVerdict(approved=False, reason="Review aborted", suggestions=[])
-            if "skip" in decision:
-                return ReviewVerdict(approved=True, reason="Auto-approved after skip", suggestions=[])
-            output = self._run_step(
-                f"CRITICAL: Review the file {task['file']} and respond with APPROVED or REWORK.",
-                read_files, "review task (retry)", timeout=90,
-            )
+        output_text = output if isinstance(output, str) else (output.get("output", "") if isinstance(output, dict) else "")
 
-        return self._parse_verdict(output or "", task["file"])
+        if not output_text or len(output_text.strip()) == 0:
+            if output.get("needs_user_input"):
+                decision = self._ask_user_retry("review task",
+                                                output.get("stderr", "no output"),
+                                                output.get("severity", "critical"))
+                if "abort" in decision:
+                    return ReviewVerdict(approved=False, reason="Review aborted", suggestions=[])
+                if "skip" in decision:
+                    return ReviewVerdict(approved=True, reason="Auto-approved after skip", suggestions=[])
+                escalated = output.get("escalated_message", "") or "CRITICAL: Review the file and respond with APPROVED or REWORK."
+                output = self._run_step(escalated, read_files, "review task (user-retry)", timeout=90)
+                output_text = output if isinstance(output, str) else (output.get("output", "") if isinstance(output, dict) else "")
+            elif output.get("auto_retry"):
+                pass  # Already auto-retried
+
+        return self._parse_verdict(output_text or "", task["file"])
 
     def review_iteration(self, iteration: dict, tasks: list[dict], docs_dir: Path) -> ReviewVerdict:
+        self.report_status("running")
+        self._step_results = []
+        self._retry_count = {}
+        try:
+            result = self._review_iteration_impl(iteration, tasks, docs_dir)
+        except Exception:
+            logger.exception("[reviewer] unhandled error in review_iteration")
+            result = ReviewVerdict(approved=False, reason="Unhandled exception", suggestions=["Manual review needed"])
+        self.report_status("idle")
+        return result
+
+    def _review_iteration_impl(self, iteration: dict, tasks: list[dict], docs_dir: Path) -> ReviewVerdict:
         written_files = [
             self.workspace / t["file"]
             for t in tasks
@@ -169,18 +291,24 @@ REWORK: <reason>
 - <fix>
 """
         output = self._run_step(message, read_files, "review iteration", timeout=90)
-        if not output or len(output.strip()) == 0:
-            decision = self._ask_user_retry("review iteration", "reviewer returned no verdict")
-            if "abort" in decision:
-                return ReviewVerdict(approved=False, reason="Review aborted", suggestions=[])
-            if "skip" in decision:
-                return ReviewVerdict(approved=True, reason="Auto-approved after skip", suggestions=[])
-            output = self._run_step(
-                "CRITICAL: Review the iteration and respond with APPROVED or REWORK.",
-                read_files, "review iteration (retry)", timeout=90,
-            )
+        output_text = output if isinstance(output, str) else (output.get("output", "") if isinstance(output, dict) else "")
 
-        return self._parse_verdict(output or "", f"iteration {iteration['id']}")
+        if not output_text or len(output_text.strip()) == 0:
+            if output.get("needs_user_input"):
+                decision = self._ask_user_retry("review iteration",
+                                                output.get("stderr", "no output"),
+                                                output.get("severity", "critical"))
+                if "abort" in decision:
+                    return ReviewVerdict(approved=False, reason="Review aborted", suggestions=[])
+                if "skip" in decision:
+                    return ReviewVerdict(approved=True, reason="Auto-approved after skip", suggestions=[])
+                escalated = output.get("escalated_message", "") or "CRITICAL: Review the iteration and respond with APPROVED or REWORK."
+                output = self._run_step(escalated, read_files, "review iteration (user-retry)", timeout=90)
+                output_text = output if isinstance(output, str) else (output.get("output", "") if isinstance(output, dict) else "")
+            elif output.get("auto_retry"):
+                pass  # Already auto-retried
+
+        return self._parse_verdict(output_text or "", f"iteration {iteration['id']}")
 
     @staticmethod
     def _parse_verdict(text: str, context: str) -> ReviewVerdict:
