@@ -243,6 +243,9 @@ class _EventStream:
 
     def emit(self, event_type: str, payload: dict | None = None) -> None:
         """Emit an event. Thread-safe. Called from orchestrator thread."""
+        if event_type == "aider_token":
+            return  # Ignore aider_token events to clean up event stream
+
         event = {
             "id":    str(uuid.uuid4())[:8],
             "ts":    time.time(),

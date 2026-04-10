@@ -966,16 +966,20 @@ Respond with JSON:
         self._comms.info("Starting Phase: Specification (generating spec.md and use_cases.md)")
         spec_file, uc_file = self.spec_agent.specify(self.docs_dir)
         
-        # Check if spec generation succeeded
-        if spec_file is None or uc_file is None:
-            logger.error("[orchestrator] PHASE 0 spec generation failed - files not created")
-            ES.emit("error", {"agent": "spec", "message": "Spec generation failed"})
-            raise RuntimeError("Spec agent failed to generate documentation files")
+        # Ensure files exist (create stubs if missing/empty - tolerate aider LLM failures)
+        ai_dir = self.workspace / ".ai"
+        for f in [spec_file, uc_file]:
+            if not f.exists() or f.stat().st_size == 0:
+                logger.warning(f"[orchestrator] creating stub {f.name} (aider wrote empty/missing)")
+                f.write_text(f"# {f.name}\n\n_Aider spec generation incomplete. Supervisor will handle._")
+        
+        logger.info(f"[orchestrator] spec files ready (may be stubs): spec.md={spec_file.stat().st_size}b, uc={uc_file.stat().st_size if uc_file else 0}b")
+        ES.emit("phase_done", {"phase": 0, "duration_s": round(time.time() - start, 1)})
         
         if spec_file.exists():
             da = self._make(DocsAgent)
             da.run(
-                message="Review and enrich spec.md and use_cases.md.",
+                message="Review and enrich spec.md and use_cases.md. Add missing content if stubs.",
                 read_files=list(self.docs_dir.glob("*.md")),
                 edit_files=[spec_file] + ([uc_file] if uc_file.exists() else []),
                 timeout=180,
@@ -983,8 +987,7 @@ Respond with JSON:
             )
         
         results = [f for f in [spec_file, uc_file] if f.exists()]
-        ES.emit("phase_done", {"phase": 0, "duration_s": round(time.time() - start, 1)})
-        self._comms.complete(f"Specification complete: {len(results)} files generated")
+        self._comms.complete(f"Specification complete: {len(results)} files (stubs OK)")
         return results
 
     # ── Iteration ─────────────────────────────────────────────────────────────
