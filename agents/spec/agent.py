@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the Spec Agent. Create specification documents from requirements."""
 
 
+def _ensure_file(path: Path) -> Path:
+    """Ensure file exists with parent directories (like docs_agent and other agents do)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.touch()
+    return path
+
+
 class SpecAgent(AiderAgent):
     _role = "spec"
 
@@ -49,8 +57,8 @@ class SpecAgent(AiderAgent):
 
     def _specify_default(self, docs_dir: Path) -> tuple[Path, Path]:
         ai_dir = self._ai_dir()
-        spec_file      = ai_dir / "spec.md"
-        use_cases_file = ai_dir / "use_cases.md"
+        spec_file      = _ensure_file(ai_dir / "spec.md")
+        use_cases_file = _ensure_file(ai_dir / "use_cases.md")
         doc_files      = list(docs_dir.glob("*.md"))
 
         if not doc_files:
@@ -65,15 +73,18 @@ class SpecAgent(AiderAgent):
                 self.emit_file_written(use_cases_file)
                 return spec_file, use_cases_file
 
+        # Clear stale content from previous failed run
+        spec_file.write_text("")
+        use_cases_file.write_text("")
+
         logger.info("[spec] step 1/3 — extract entities (%d docs)", len(doc_files))
 
         # ── Step 1: extract key entities — small, fast ────────────────────────
-        entities_file = ai_dir / "entities.md"
-        
-        # Remove file if it exists (might be empty from previous failed run)
-        if entities_file.exists():
-            entities_file.unlink()
-        
+        entities_file = _ensure_file(ai_dir / "entities.md")
+
+        # Clear stale content from previous failed run
+        entities_file.write_text("")
+
         result1 = self.run(
             message=(
                 f"Read the docs. List the main entities (nouns) this system works with.\n"
@@ -179,10 +190,10 @@ class SpecAgent(AiderAgent):
         for d in [specs_dir, change_dir, change_specs]:
             d.mkdir(parents=True, exist_ok=True)
 
-        proposal_file   = change_dir / "proposal.md"
-        delta_spec_file = change_specs / "spec.md"
-        design_file     = change_dir / "design.md"
-        tasks_file      = change_dir / "tasks.md"
+        proposal_file   = _ensure_file(change_dir / "proposal.md")
+        delta_spec_file = _ensure_file(change_specs / "spec.md")
+        design_file     = _ensure_file(change_dir / "design.md")
+        tasks_file      = _ensure_file(change_dir / "tasks.md")
 
         # Resume logic: skip if files already exist and are non-empty
         if proposal_file.exists() and proposal_file.stat().st_size > 0:
@@ -191,6 +202,10 @@ class SpecAgent(AiderAgent):
                 self.emit_file_written(proposal_file)
                 self.emit_file_written(delta_spec_file)
                 return proposal_file, delta_spec_file
+
+        # Clear stale content from previous failed run
+        proposal_file.write_text("")
+        delta_spec_file.write_text("")
 
         # Step 1: proposal (why + what)
         logger.info("[spec] openspec step 1/3 — proposal")
@@ -249,14 +264,14 @@ class SpecAgent(AiderAgent):
             self.emit_file_written(sot_spec)
 
         # Stubs for architect/planner
-        if not design_file.exists():
+        if not design_file.exists() or design_file.stat().st_size == 0:
             design_file.write_text(
                 f"# Design: {change_name}\n\n"
                 "_Architect fills this._\n\n"
                 "## Approach\n\n## Key Decisions\n\n## Component Changes\n"
             )
             self.emit_file_written(design_file)
-        if not tasks_file.exists():
+        if not tasks_file.exists() or tasks_file.stat().st_size == 0:
             tasks_file.write_text(
                 f"# Tasks: {change_name}\n\n"
                 "_Planner fills this._\n\n"
