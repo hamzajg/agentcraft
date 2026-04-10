@@ -1,273 +1,297 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
-import { Badge, Avatar } from './ui'
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { Badge, Avatar } from './ui';
 
-const OLDER_MESSAGES_LIMIT = 10
-const INITIAL_LOAD_COUNT = 10
+const OLDER_MESSAGES_LIMIT = 10;
+const INITIAL_LOAD_COUNT = 10;
 
-export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply, busMessages = [], onLoadMessages }) {
-  const [showChat, setShowChat] = useState(false)
-  const [replyText, setReplyText] = useState('')
-  const [localReplies, setLocalReplies] = useState({})
-  const [showBusMessages, setShowBusMessages] = useState(false)
-  const [unreadBusCount, setUnreadBusCount] = useState(0)
-  const [seenBusMsgIds, setSeenBusMsgIds] = useState(new Set())
-  const [olderMessages, setOlderMessages] = useState([])
-  const [loadingInitial, setLoadingInitial] = useState(false)
-  const [loadingOlder, setLoadingOlder] = useState(false)
-  const [hasMore, setHasMore] = useState(true)
-  const [oldestCursor, setOldestCursor] = useState(null)
-  const [userScrolledUp, setUserScrolledUp] = useState(false)
-  const [initialLoadDone, setInitialLoadDone] = useState(false)
-  const messagesContainerRef = useRef(null)
-  const messagesEndRef = useRef(null)
-  const sentinelRef = useRef(null)
-  const prevLiveCountRef = useRef(0)
+export function AgentPanel({ channels, statuses, messages, activeAgent, setActiveAgent, sending, onReply, busMessages = [] }) {
+  const [showChat, setShowChat] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [localReplies, setLocalReplies] = useState({});
+  const [showBusMessages, setShowBusMessages] = useState(false);
+  const [unreadBusCount, setUnreadBusCount] = useState(0);
+  const [seenBusMsgIds, setSeenBusMsgIds] = useState(new Set());
+  const [olderMessages, setOlderMessages] = useState([]);
+  const [loadingInitial, setLoadingInitial] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [oldestCursor, setOldestCursor] = useState(null);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
+  const [initialMessages, setInitialMessages] = useState([]);
+  const messagesContainerRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const sentinelRef = useRef(null);
+  const prevLiveCountRef = useRef(0);
 
-  const selectedChannel = channels.find(c => c.agent_id === activeAgent)
+  const selectedChannel = channels.find(c => c.agent_id === activeAgent);
 
   // All messages from WebSocket store for this agent — sorted oldest first
   const allStoreMessages = useMemo(() => {
-    if (!activeAgent) return []
-    const msgs = messages[activeAgent] ?? []
-    return [...msgs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-  }, [activeAgent, messages])
+    if (!activeAgent) return [];
+    const msgs = messages[activeAgent] ?? [];
+    return [...msgs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  }, [activeAgent, messages]);
 
   // The last pending message (always visible)
   const currentPending = useMemo(() => {
-    const pending = allStoreMessages.filter(m => m.status === 'pending')
-    if (pending.length === 0) return null
-    return pending.reduce((latest, m) =>
-      new Date(m.created_at) > new Date(latest.created_at) ? m : latest
-    )
-  }, [allStoreMessages])
+    const pending = allStoreMessages.filter(m => m.status === 'pending');
+    if (pending.length === 0) return null;
+    return pending.reduce((latest, m) => (new Date(m.created_at) > new Date(latest.created_at) ? m : latest));
+  }, [allStoreMessages]);
 
   // Agent-to-agent messages for the active agent
   const agentBusMessages = useMemo(() => {
-    if (!activeAgent) return []
+    if (!activeAgent) return [];
     return busMessages
       .filter(m => m.from_agent === activeAgent || m.to_agent === activeAgent)
-      .sort((a, b) => new Date(b.time) - new Date(a.time)) // newest first
-  }, [activeAgent, busMessages])
+      .sort((a, b) => new Date(b.time) - new Date(a.time)); // newest first
+  }, [activeAgent, busMessages]);
 
   // Count unread bus messages (messages that arrived since last viewed)
   useEffect(() => {
-    if (!activeAgent) return
-    const now = agentBusMessages.map(m => m.id)
-    const newMsgs = now.filter(id => !seenBusMsgIds.has(id))
-    setUnreadBusCount(newMsgs.length)
-  }, [agentBusMessages.length, activeAgent])
+    if (!activeAgent) return;
+    const now = agentBusMessages.map(m => m.id);
+    const newMsgs = now.filter(id => !seenBusMsgIds.has(id));
+    setUnreadBusCount(newMsgs.length);
+  }, [agentBusMessages.length, activeAgent, seenBusMsgIds]);
 
   // Mark bus messages as seen when user opens the bus panel
   const markBusMessagesSeen = useCallback(() => {
-    const newSeen = new Set(seenBusMsgIds)
-    for (const m of agentBusMessages) newSeen.add(m.id)
-    setSeenBusMsgIds(newSeen)
-    setUnreadBusCount(0)
-  }, [agentBusMessages, seenBusMsgIds])
+    const newSeen = new Set(seenBusMsgIds);
+    for (const m of agentBusMessages) newSeen.add(m.id);
+    setSeenBusMsgIds(newSeen);
+    setUnreadBusCount(0);
+  }, [agentBusMessages, seenBusMsgIds]);
 
   const handleBusToggle = useCallback(() => {
     setShowBusMessages(prev => {
-      const next = !prev
-      if (next) markBusMessagesSeen()
-      return next
-    })
-  }, [markBusMessagesSeen])
+      const next = !prev;
+      if (next) markBusMessagesSeen();
+      return next;
+    });
+  }, [markBusMessagesSeen]);
 
   // Visible messages: loaded history (newest 10) + older (scroll) + current pending
   const visibleMessages = useMemo(() => {
-    const items = []
-    const seen = new Set()
+    const items = [];
+    const seen = new Set();
 
     // Add older messages (from reverse scroll)
     for (const m of olderMessages) {
       if (!seen.has(m.id)) {
-        seen.add(m.id)
-        items.push(m)
+        seen.add(m.id);
+        items.push(m);
       }
     }
 
     // Add initially loaded recent messages
     for (const m of initialMessages) {
       if (!seen.has(m.id)) {
-        seen.add(m.id)
-        items.push(m)
+        seen.add(m.id);
+        items.push(m);
       }
     }
 
     // Add only the current pending message if not already included
     if (currentPending && !seen.has(currentPending.id)) {
-      seen.add(currentPending.id)
-      items.push(currentPending)
+      seen.add(currentPending.id);
+      items.push(currentPending);
     }
 
-    return items.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-  }, [olderMessages, initialMessages, currentPending])
+    return items.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  }, [olderMessages, initialMessages, currentPending]);
 
   // Detect new messages arriving via WebSocket (for auto-scroll)
   useEffect(() => {
-    const count = allStoreMessages.length
-    const isNew = count > prevLiveCountRef.current
-    prevLiveCountRef.current = count
+    const count = allStoreMessages.length;
+    const isNew = count > prevLiveCountRef.current;
+    prevLiveCountRef.current = count;
 
     if (isNew && !userScrolledUp) {
       setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-      }, 100)
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
     }
-  }, [allStoreMessages.length, userScrolledUp])
+  }, [allStoreMessages.length, userScrolledUp]);
 
   // Reset state when agent selection changes
   useEffect(() => {
-    setInitialMessages([])
-    setOlderMessages([])
-    setHasMore(true)
-    setOldestCursor(null)
-    setUserScrolledUp(false)
-    setInitialLoadDone(false)
-    prevLiveCountRef.current = 0
+    setInitialMessages([]);
+    setOlderMessages([]);
+    setHasMore(true);
+    setOldestCursor(null);
+    setUserScrolledUp(false);
+    setInitialLoadDone(false);
+    prevLiveCountRef.current = 0;
     // Mark current bus messages as seen when switching agents
-    const newSeen = new Set(seenBusMsgIds)
-    for (const m of agentBusMessages) newSeen.add(m.id)
-    setSeenBusMsgIds(newSeen)
-    setUnreadBusCount(0)
-  }, [activeAgent])
+    const newSeen = new Set(seenBusMsgIds);
+    for (const m of agentBusMessages) newSeen.add(m.id);
+    setSeenBusMsgIds(newSeen);
+    setUnreadBusCount(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAgent]);
 
   // Load initial 10 messages when agent changes
+  const loadInitialMessages = useCallback(async () => {
+    if (loadingInitial || !activeAgent) return;
+    setLoadingInitial(true);
+    try {
+      const res = await fetch(`/api/messages/${activeAgent}/older?limit=${INITIAL_LOAD_COUNT}`);
+      const data = await res.json();
+
+      if (data.length < INITIAL_LOAD_COUNT) {
+        setHasMore(false);
+      }
+      if (data && data.length > 0) {
+        setInitialMessages([...data].reverse());
+        const oldest = data.reduce((min, m) => (new Date(m.created_at) < new Date(min.created_at) ? m : min));
+        setOldestCursor(oldest.created_at);
+      }
+    } catch (err) {
+      console.error('Failed to load initial messages:', err);
+    } finally {
+      setLoadingInitial(false);
+      setInitialLoadDone(true);
+    }
+  }, [activeAgent, loadingInitial]);
+
   useEffect(() => {
     if (activeAgent) {
-      loadInitialMessages()
+      loadInitialMessages();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgent])
+  }, [activeAgent]);
 
   // Load older messages via cursor pagination (triggered by scroll)
   const loadOlderMessages = useCallback(async () => {
-    if (loadingOlder || !hasMore || !activeAgent) return
-    setLoadingOlder(true)
+    if (loadingOlder || !hasMore || !activeAgent) return;
+    setLoadingOlder(true);
     try {
-      const params = new URLSearchParams({ limit: OLDER_MESSAGES_LIMIT })
-      if (oldestCursor) params.set('before', oldestCursor)
-      const res = await fetch(`/api/messages/${activeAgent}/older?${params}`)
-      const older = await res.json()
+      const params = new URLSearchParams({ limit: OLDER_MESSAGES_LIMIT });
+      if (oldestCursor) params.set('before', oldestCursor);
+      const res = await fetch(`/api/messages/${activeAgent}/older?${params}`);
+      const older = await res.json();
 
       if (older.length < OLDER_MESSAGES_LIMIT) {
-        setHasMore(false)
+        setHasMore(false);
       }
       if (older.length > 0) {
-        const reversed = [...older].reverse()
-        setOlderMessages(prev => [...reversed, ...prev])
+        const reversed = [...older].reverse();
+        setOlderMessages(prev => [...reversed, ...prev]);
 
-        const allOlder = [...older, ...olderMessages]
+        const allOlder = [...older, ...olderMessages];
         if (allOlder.length > 0) {
-          const oldest = allOlder.reduce((min, m) =>
-            new Date(m.created_at) < new Date(min.created_at) ? m : min
-          )
-          setOldestCursor(oldest.created_at)
+          const oldest = allOlder.reduce((min, m) => (new Date(m.created_at) < new Date(min.created_at) ? m : min));
+          setOldestCursor(oldest.created_at);
         }
       }
     } catch (err) {
-      console.error('Failed to load older messages:', err)
+      console.error('Failed to load older messages:', err);
     } finally {
-      setLoadingOlder(false)
+      setLoadingOlder(false);
     }
-  }, [loadingOlder, hasMore, activeAgent, oldestCursor, olderMessages])
+  }, [loadingOlder, hasMore, activeAgent, oldestCursor, olderMessages]);
 
   // IntersectionObserver on sentinel — triggers ONLY when user scrolls up
   useEffect(() => {
-    const el = sentinelRef.current
-    if (!el || !hasMore || !initialLoadDone) return
+    const el = sentinelRef.current;
+    if (!el || !hasMore || !initialLoadDone) return;
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && userScrolledUp) {
-          loadOlderMessages()
+          loadOlderMessages();
         }
       },
-      { root: messagesContainerRef.current, rootMargin: '150px 0px 0px 0px' }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [loadOlderMessages, hasMore, initialLoadDone, userScrolledUp])
+      { root: messagesContainerRef.current, rootMargin: '150px 0px 0px 0px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loadOlderMessages, hasMore, initialLoadDone, userScrolledUp]);
 
   // Detect user scrolling up
-  const handleContainerScroll = useCallback((e) => {
-    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-    setUserScrolledUp(distanceFromBottom > 200)
-    if (distanceFromBottom < 50 && initialLoadDone) {
-      setUserScrolledUp(false)
-    }
-  }, [initialLoadDone])
+  const handleContainerScroll = useCallback(
+    e => {
+      const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      setUserScrolledUp(distanceFromBottom > 200);
+      if (distanceFromBottom < 50 && initialLoadDone) {
+        setUserScrolledUp(false);
+      }
+    },
+    [initialLoadDone],
+  );
 
-  const handleAgentClick = (agentId) => {
-    setActiveAgent(agentId)
-    setShowChat(true)
-    setLocalReplies({})
-    setReplyText('')
-  }
+  const handleAgentClick = agentId => {
+    setActiveAgent(agentId);
+    setShowChat(true);
+    setLocalReplies({});
+    setReplyText('');
+  };
 
   const handleBack = () => {
-    setShowChat(false)
-    setLocalReplies({})
-    setReplyText('')
-  }
+    setShowChat(false);
+    setLocalReplies({});
+    setReplyText('');
+  };
 
   const handleSend = async () => {
-    if (!currentPending || !replyText.trim()) return
+    if (!currentPending || !replyText.trim()) return;
 
-    const msgId = currentPending.id
-    const text = replyText
+    const msgId = currentPending.id;
+    const text = replyText;
 
-    setLocalReplies(prev => ({ ...prev, [msgId]: text }))
-    setReplyText('')
+    setLocalReplies(prev => ({ ...prev, [msgId]: text }));
+    setReplyText('');
 
     try {
-      await onReply(msgId, text)
+      await onReply(msgId, text);
     } catch (err) {
-      console.error('Send failed:', err)
+      console.error('Send failed:', err);
       setLocalReplies(prev => {
-        const next = { ...prev }
-        delete next[msgId]
-        return next
-      })
+        const next = { ...prev };
+        delete next[msgId];
+        return next;
+      });
     }
-  }
+  };
 
   const handleSuggestionClick = async (suggestion, msgId) => {
-    if (!msgId || sending) return
+    if (!msgId || sending) return;
 
-    setLocalReplies(prev => ({ ...prev, [msgId]: suggestion }))
+    setLocalReplies(prev => ({ ...prev, [msgId]: suggestion }));
 
     try {
-      await onReply(msgId, suggestion)
+      await onReply(msgId, suggestion);
     } catch (err) {
-      console.error('Send failed:', err)
+      console.error('Send failed:', err);
       setLocalReplies(prev => {
-        const next = { ...prev }
-        delete next[msgId]
-        return next
-      })
+        const next = { ...prev };
+        delete next[msgId];
+        return next;
+      });
     }
-  }
+  };
 
-  const handleKeyDown = (e) => {
+  const handleKeyDown = e => {
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
+      e.preventDefault();
+      handleSend();
     }
-  }
+  };
 
   // Bus message type badge config
-  const busTypeBadge = (type) => {
+  const busTypeBadge = type => {
     const map = {
-      agent_query:   { label: 'query',    bg: 'bg-amber/10',    text: 'text-amber' },
-      agent_reply:   { label: 'reply',    bg: 'bg-teal/10',     text: 'text-teal' },
-      agent_delegate:{ label: 'delegate', bg: 'bg-violet/10',   text: 'text-violet' },
-      agent_context: { label: 'context',  bg: 'bg-blue/10',     text: 'text-blue' },
-      agent_broadcast:{ label: 'broadcast',bg: 'bg-cyan/10',    text: 'text-cyan' },
-    }
-    const cfg = map[type] || { label: type.replace('agent_', ''), bg: 'bg-slate-700', text: 'text-slate-400' }
-    return cfg
-  }
+      agent_query: { label: 'query', bg: 'bg-amber/10', text: 'text-amber' },
+      agent_reply: { label: 'reply', bg: 'bg-teal/10', text: 'text-teal' },
+      agent_delegate: { label: 'delegate', bg: 'bg-violet/10', text: 'text-violet' },
+      agent_context: { label: 'context', bg: 'bg-blue/10', text: 'text-blue' },
+      agent_broadcast: { label: 'broadcast', bg: 'bg-cyan/10', text: 'text-cyan' },
+    };
+    const cfg = map[type] || { label: type.replace('agent_', ''), bg: 'bg-slate-700', text: 'text-slate-400' };
+    return cfg;
+  };
 
   return (
     <div className="h-full flex flex-col bg-slate-950">
@@ -278,7 +302,9 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
             <h2 className="text-sm font-semibold text-slate-200">Agents</h2>
             <div className="flex items-center gap-2">
               {currentPending && (
-                <Badge variant="warning" className="animate-pulse text-xs">Needs input</Badge>
+                <Badge variant="warning" className="animate-pulse text-xs">
+                  Needs input
+                </Badge>
               )}
               <span className="text-xs text-slate-500">{channels.length}</span>
             </div>
@@ -298,12 +324,8 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
               <>
                 <Avatar name={activeAgent} size="sm" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-200 truncate">
-                    {selectedChannel.agent_label || activeAgent}
-                  </p>
-                  <p className="text-xs text-slate-500 capitalize">
-                    {statuses[activeAgent] || 'idle'}
-                  </p>
+                  <p className="text-sm font-medium text-slate-200 truncate">{selectedChannel.agent_label || activeAgent}</p>
+                  <p className="text-xs text-slate-500 capitalize">{statuses[activeAgent] || 'idle'}</p>
                 </div>
                 {/* Agent-to-Agent toggle with unread badge */}
                 <button
@@ -346,20 +368,16 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
             </div>
           ) : (
             <div className="divide-y divide-slate-800/50">
-              {channels.map((channel) => {
-                const status = statuses[channel.agent_id] || 'idle'
-                const agentMessages = messages[channel.agent_id] || []
-                const hasPending = agentMessages.some(m => m.status === 'pending')
-                const pendingCount = agentMessages.filter(m => m.status === 'pending').length
-                const lastMsg = [...agentMessages].sort((a, b) =>
-                  new Date(b.created_at) - new Date(a.created_at)
-                )[0]
+              {channels.map(channel => {
+                const status = statuses[channel.agent_id] || 'idle';
+                const agentMessages = messages[channel.agent_id] || [];
+                const hasPending = agentMessages.some(m => m.status === 'pending');
+                const pendingCount = agentMessages.filter(m => m.status === 'pending').length;
+                const lastMsg = [...agentMessages].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
 
                 // Agent-to-agent messages count for this agent
-                const agentBus = busMessages.filter(
-                  m => m.from_agent === channel.agent_id || m.to_agent === channel.agent_id
-                )
-                const unseenBus = agentBus.filter(m => !seenBusMsgIds.has(m.id))
+                const agentBus = busMessages.filter(m => m.from_agent === channel.agent_id || m.to_agent === channel.agent_id);
+                const unseenBus = agentBus.filter(m => !seenBusMsgIds.has(m.id));
 
                 return (
                   <button
@@ -371,15 +389,15 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                   >
                     <div className="relative flex-shrink-0">
                       <Avatar name={channel.agent_id} size="md" />
-                      <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-950 ${
-                        status === 'running' ? 'bg-teal' : status === 'idle' ? 'bg-slate-500' : 'bg-amber'
-                      }`} />
+                      <div
+                        className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-950 ${
+                          status === 'running' ? 'bg-teal' : status === 'idle' ? 'bg-slate-500' : 'bg-amber'
+                        }`}
+                      />
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <p className="text-sm font-medium text-slate-200 truncate">
-                          {channel.agent_label || channel.agent_id}
-                        </p>
+                        <p className="text-sm font-medium text-slate-200 truncate">{channel.agent_label || channel.agent_id}</p>
                         <div className="flex items-center gap-2 flex-shrink-0">
                           {/* Agent-to-agent badge */}
                           {unseenBus.length > 0 && (
@@ -394,9 +412,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                           {hasPending && (
                             <span className="flex items-center gap-1">
                               <span className="w-2 h-2 rounded-full bg-amber animate-pulse" />
-                              {pendingCount > 1 && (
-                                <span className="text-[10px] text-amber">{pendingCount}</span>
-                              )}
+                              {pendingCount > 1 && <span className="text-[10px] text-amber">{pendingCount}</span>}
                             </span>
                           )}
                         </div>
@@ -409,7 +425,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                       )}
                     </div>
                   </button>
-                )
+                );
               })}
             </div>
           )}
@@ -419,11 +435,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       {/* Chat View */}
       {showChat && activeAgent && (
         <>
-          <div
-            ref={messagesContainerRef}
-            onScroll={handleContainerScroll}
-            className="flex-1 overflow-y-auto p-3 space-y-3"
-          >
+          <div ref={messagesContainerRef} onScroll={handleContainerScroll} className="flex-1 overflow-y-auto p-3 space-y-3">
             {/* Sentinel — triggers loading ONLY when user scrolled up */}
             {hasMore && initialLoadDone && userScrolledUp && <div ref={sentinelRef} className="h-1" />}
 
@@ -441,25 +453,26 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                   <div className="flex items-center gap-2">
                     <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Agent Collaboration</h3>
                     {unreadBusCount > 0 && (
-                      <Badge variant="warning" className="text-[10px] animate-pulse">{unreadBusCount} new</Badge>
+                      <Badge variant="warning" className="text-[10px] animate-pulse">
+                        {unreadBusCount} new
+                      </Badge>
                     )}
                   </div>
                   <span className="text-xs text-slate-600">{agentBusMessages.length} messages</span>
                 </div>
                 <div className="space-y-1.5">
-                  {agentBusMessages.slice(0, 30).map((msg) => {
-                    const cfg = busTypeBadge(msg.type)
-                    const isUnread = !seenBusMsgIds.has(msg.id)
+                  {agentBusMessages.slice(0, 30).map(msg => {
+                    const cfg = busTypeBadge(msg.type);
+                    const isUnread = !seenBusMsgIds.has(msg.id);
                     return (
-                      <div key={msg.id} className={`rounded-lg border p-2 text-xs transition-colors ${
-                        isUnread
-                          ? 'border-violet/30 bg-violet/5'
-                          : 'border-slate-800/50 bg-slate-900/20'
-                      }`}>
+                      <div
+                        key={msg.id}
+                        className={`rounded-lg border p-2 text-xs transition-colors ${
+                          isUnread ? 'border-violet/30 bg-violet/5' : 'border-slate-800/50 bg-slate-900/20'
+                        }`}
+                      >
                         <div className="flex items-center gap-1.5 mb-1">
-                          <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${cfg.bg} ${cfg.text}`}>
-                            {cfg.label}
-                          </span>
+                          <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${cfg.bg} ${cfg.text}`}>{cfg.label}</span>
                           <Avatar name={msg.from_agent} size="xs" />
                           <span className="text-slate-400">@{msg.from_agent}</span>
                           {msg.to_agent && (
@@ -473,24 +486,24 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                         </div>
                         <p className="text-slate-300">{msg.text}</p>
                       </div>
-                    )
+                    );
                   })}
                 </div>
               </div>
             )}
 
             {/* Messages */}
-            {visibleMessages.map((msg) => {
-              const isCurrentPending = msg.id === currentPending?.id
-              const userReply = localReplies[msg.id] || msg.reply
+            {visibleMessages.map(msg => {
+              const isCurrentPending = msg.id === currentPending?.id;
+              const userReply = localReplies[msg.id] || msg.reply;
 
               return (
                 <div key={msg.id} className="space-y-2">
-                  <div className={`rounded-xl border p-3 ${
-                    isCurrentPending && !userReply
-                      ? 'border-amber/30 bg-amber/5'
-                      : 'border-slate-800 bg-slate-900/30'
-                  }`}>
+                  <div
+                    className={`rounded-xl border p-3 ${
+                      isCurrentPending && !userReply ? 'border-amber/30 bg-amber/5' : 'border-slate-800 bg-slate-900/30'
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-1.5">
                         <Avatar name={msg.agent_id} size="sm" />
@@ -507,9 +520,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                       </div>
                     </div>
 
-                    <p className="text-sm text-slate-200 whitespace-pre-wrap">
-                      {msg.question}
-                    </p>
+                    <p className="text-sm text-slate-200 whitespace-pre-wrap">{msg.question}</p>
 
                     {msg.suggestions?.length > 0 && isCurrentPending && !userReply && (
                       <div className="border-t border-slate-700/50 pt-2 mt-2">
@@ -546,7 +557,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                     </div>
                   )}
                 </div>
-              )
+              );
             })}
 
             {visibleMessages.length === 0 && !loadingInitial && !loadingOlder && (
@@ -554,9 +565,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                 <svg className="w-12 h-12 mb-4 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                 </svg>
-                <p className="text-sm">
-                  {currentPending ? 'New message from agent' : 'No messages yet'}
-                </p>
+                <p className="text-sm">{currentPending ? 'New message from agent' : 'No messages yet'}</p>
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -566,7 +575,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
           <div className="border-t border-slate-800 p-3 space-y-2">
             <textarea
               value={replyText}
-              onChange={(e) => setReplyText(e.target.value)}
+              onChange={e => setReplyText(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={currentPending ? 'Type your reply...' : 'No pending requests'}
               disabled={!currentPending || sending}
@@ -574,9 +583,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-accent/50 resize-none disabled:opacity-50"
             />
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-500">
-                {currentPending ? `Replying to @${activeAgent}` : 'Idle'}
-              </span>
+              <span className="text-xs text-slate-500">{currentPending ? `Replying to @${activeAgent}` : 'Idle'}</span>
               <button
                 onClick={handleSend}
                 disabled={!currentPending || !replyText.trim() || sending}
@@ -589,14 +596,14 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
         </>
       )}
     </div>
-  )
+  );
 }
 
 function formatTime(timestamp) {
-  if (!timestamp) return ''
-  const seconds = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000)
-  if (seconds < 5) return 'Just now'
-  if (seconds < 60) return `${seconds}s`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
-  return `${Math.floor(seconds / 3600)}h`
+  if (!timestamp) return '';
+  const seconds = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
+  if (seconds < 5) return 'Just now';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h`;
 }
