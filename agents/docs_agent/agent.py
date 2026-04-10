@@ -48,7 +48,7 @@ class DocsAgent(AiderAgent):
             model=model,
             workspace=workspace,
             system_prompt=system_prompt or SYSTEM_PROMPT,
-            skills=skills or ["technical-writing", "requirements-analysis", "architecture-design"],
+            skills=skills or ["deep-research", "create-doc", "agent-collaboration"],
             framework_id=framework_id,
             task_id=task_id,
             iteration_id=iteration_id,

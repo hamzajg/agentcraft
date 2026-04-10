@@ -487,7 +487,7 @@ def _run_workflow(args, start_from_iteration: int):
             comms_process = subprocess.Popen([
                 sys.executable, "-m", "uvicorn", "comms.main:app",
                 f"--port={comms_port}", "--log-level=warning"
-            ], cwd=str(ws_root))
+            ], cwd=str(ws_root), env={**os.environ, "PYTHONPATH": str(AGENTCRAFT_HOME)})
             time.sleep(3)
             print(f"  Comms server ready at http://localhost:{comms_port}")
 

@@ -54,6 +54,17 @@ else:
     logger.info(f"Serving assets from: {ASSETS_DIR}")
 
 
+def _workspace_root() -> Path:
+    """Detect workspace root by walking up from CWD for workspace.yaml."""
+    import os
+    cur = Path(os.getcwd())
+    for d in [cur] + list(cur.parents):
+        if (d / "workspace.yaml").exists():
+            return d
+    # Fallback: agentcraft installation dir
+    return Path(__file__).parent.parent
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store.init_db()
@@ -351,7 +362,7 @@ async def metrics_stream():
     from pathlib import Path
     from fastapi.responses import StreamingResponse
 
-    ai_team = Path(__file__).parent.parent
+    ai_team = _workspace_root()
     
 
     async def generate():
@@ -379,8 +390,8 @@ async def hardware_profile():
     """Return the hardware profile from model-profile.yaml if it exists."""
     import sys
     from pathlib import Path
-    ai_team = Path(__file__).parent.parent
-    profile = Path(__file__).parent.parent / "model-profile.yaml"
+    ai_team = _workspace_root()
+    profile = ai_team / "model-profile.yaml"
     if not profile.exists():
         return {"profile": None, "message": "Run: agentcraft diagnose"}
     try:
@@ -392,37 +403,18 @@ async def hardware_profile():
 
 # ── RAG repository endpoints ──────────────────────────────────────────────────
 
-def _rag_store_path():
-    import yaml
-    from pathlib import Path
-    repo_root = Path(__file__).parent.parent
-    ws_file   = repo_root / "workspace.yaml"
-    if ws_file.exists():
-        ws  = yaml.safe_load(ws_file.read_text()) or {}
-        base = ws.get("paths", {}).get("output", "output")
-        sub  = ws.get("rag", {}).get("store_path", ".rag")
-        return repo_root / base / sub
-    return repo_root / "output" / ".rag"
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# RAG observatory endpoints
-# ═══════════════════════════════════════════════════════════════════════
-
 def _rag_store_path() -> "Path":
     """Resolve the LanceDB store path from workspace.yaml."""
     import sys
     from pathlib import Path as P
-    ai_team   = P(__file__).parent.parent
-    
-    repo_root = P(__file__).parent.parent
+    ws_root = _workspace_root()
     try:
         import yaml
-        ws = yaml.safe_load((repo_root / "workspace.yaml").read_text())
+        ws = yaml.safe_load((ws_root / "workspace.yaml").read_text())
     except Exception:
         ws = {}
-    output = repo_root / ws.get("paths", {}).get("output", ".")
-    return output / ".rag"
+    output = ws_root / ws.get("paths", {}).get("output", ".")
+    return output / ws.get("rag", {}).get("store_path", ".rag")
 
 
 def _make_rag_stats():
@@ -974,23 +966,24 @@ async def live_file(path: str):
 def _get_workspace_paths():
     """Get workspace paths from workspace.yaml."""
     from pathlib import Path
-    repo_root = Path(__file__).parent.parent
+    ws_root = _workspace_root()
     try:
         import yaml
-        ws = yaml.safe_load((repo_root / "workspace.yaml").read_text()) or {}
+        ws = yaml.safe_load((ws_root / "workspace.yaml").read_text()) or {}
         paths = ws.get("paths", {})
         return {
-            "root": repo_root,
-            "docs": repo_root / paths.get("docs", "docs"),
-            "workflow": repo_root / paths.get("workflow", ".ai"),
-            "output": repo_root / paths.get("output", "output"),
+            "root": ws_root,
+            "docs": ws_root / paths.get("docs", "docs"),
+            "workflow": ws_root / paths.get("workflow", ".ai"),
+            "output": ws_root / paths.get("output", "output"),
         }
     except Exception:
+        ws_root = _workspace_root()
         return {
-            "root": repo_root,
-            "docs": repo_root / "docs",
-            "workflow": repo_root / ".ai",
-            "output": repo_root / "output",
+            "root": ws_root,
+            "docs": ws_root / "docs",
+            "workflow": ws_root / ".ai",
+            "output": ws_root / "output",
         }
 
 
