@@ -439,6 +439,7 @@ export function WorkspaceLayout() {
             setActiveAgent={setActiveAgent}
             sending={sending}
             onReply={handleReply}
+            onLoadMessages={loadAgentMessages}
           />
         </div>
       </div>
