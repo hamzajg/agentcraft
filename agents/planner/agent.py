@@ -2,7 +2,7 @@
 planner/agent.py — Planner agent.
 
 ROLE: Task decomposition and planning.
-Follows the same smart failure classification + auto-retry pattern as all agents.
+Uses chunked approach: one LLM call per task for reliability.
 """
 
 import json
@@ -224,13 +224,13 @@ class PlannerAgent(AiderAgent):
         return result
 
     def _decompose_impl(self, iteration: dict, docs_dir: Path, prior_tasks_files: list[Path] = None) -> list[dict]:
+        """Decompose iteration into tasks using chunked approach for reliability."""
         ai_dir = self.workspace / ".ai"
         ai_dir.mkdir(parents=True, exist_ok=True)
 
         files_expected = iteration.get("files_expected", [])
         if not files_expected:
             logger.warning("[planner] iteration %d has no files_expected — creating minimal task", iteration.get("id"))
-            # Create a minimal task based on iteration goal
             return [{
                 "id": f"iter{iteration.get('id')}_task1",
                 "iteration_id": iteration.get("id"),
@@ -242,8 +242,9 @@ class PlannerAgent(AiderAgent):
                 "acceptance_criteria": iteration.get("acceptance_criteria", ["runs without errors"])
             }]
 
-        self._log(f"Decomposing iteration {iteration.get('id')} into tasks")
+        self._log(f"Decomposing iteration {iteration.get('id')} into {len(files_expected)} tasks")
 
+        # Build context files list
         context_files = list(docs_dir.glob("*.md"))
         if prior_tasks_files:
             context_files.extend(prior_tasks_files)
@@ -251,83 +252,50 @@ class PlannerAgent(AiderAgent):
         if spec_file.exists():
             context_files.append(spec_file)
 
-        # Build concise context from files
-        file_contexts = []
-        for f in context_files[:5]:  # Limit to avoid overwhelming context
-            try:
-                content = f.read_text()[:500]
-                file_contexts.append(f"### {f.name}\n{content}")
-            except Exception:
-                pass
+        # Create one task per file (chunked - one LLM call per file)
+        tasks = []
+        for i, file_path in enumerate(files_expected, 1):
+            task_prompt = f"""Create a task for this file.
 
-        prompt = f"""Decompose this iteration into concrete tasks.
-
-## Iteration
-- ID: {iteration.get('id')}
-- Phase: {iteration.get('phase', 1)}
-- Name: {iteration.get('name', 'unnamed')}
-- Goal: {iteration.get('goal', 'No goal specified')}
-- Files Expected: {json.dumps(files_expected)}
-
-## Acceptance Criteria
-{json.dumps(iteration.get('acceptance_criteria', []))}
+## File: {file_path}
+## Iteration {iteration.get('id')} (Phase {iteration.get('phase', 1)})
+## Goal: {iteration.get('goal', 'No goal specified')}
 
 ## Available Agents
-- backend_dev: implements application code (any language/framework)
-- test_dev: writes unit/integration tests
-- config_agent: creates configuration files (settings, env, etc.)
+- backend_dev: implements application code
+- test_dev: writes tests
+- config_agent: creates config files
 - docs_agent: writes documentation
-- cicd: creates CI/CD and infrastructure files
+- cicd: creates CI/CD files
 
-## Task
-For each file in files_expected, create ONE task:
-1. Assign the most appropriate agent
-2. Write a clear description of what to implement
-3. Define 2-3 acceptance criteria
+Respond with ONLY this JSON:
+{{
+  "agent": "agent_name",
+  "description": "what to implement",
+  "needs_test": false,
+  "acceptance_criteria": ["criterion 1", "criterion 2"]
+}}"""
 
-### Output Format (STRICT):
-You MUST output ONLY a valid JSON array. NO markdown, NO code blocks, NO explanations.
-The response must be parseable as JSON starting with '[' and ending with ']'.
+            task_result = self._run_step(task_prompt, context_files[:3], label=f"task {i} for {Path(file_path).name}", timeout=90)
+            task_info = self._parse_task_info(task_result.get("output", "{}"))
 
-### JSON Schema:
-[
-  {{
-    "id": "iter1_task1",
-    "iteration_id": {iteration.get('id')},
-    "agent": "backend_dev|test_dev|config_agent|docs_agent|cicd",
-    "file": "path/to/file.py",
-    "description": "Clear description of what to implement",
-    "context_files": ["file1.md", "file2.md"],
-    "needs_test": false,
-    "acceptance_criteria": ["criteria1", "criteria2"]
-  }}
-]
+            # Determine agent
+            agent = task_info.get("agent", self._infer_agent_from_file(file_path))
 
-### Example:
-[
-  {{
-    "id": "iter1_task1",
-    "iteration_id": 1,
-    "agent": "backend_dev",
-    "file": "main.py",
-    "description": "Create main application entry point",
-    "context_files": ["spec.md"],
-    "needs_test": false,
-    "acceptance_criteria": ["file created", "runs without errors"]
-  }}
-]
+            task = {
+                "id": f"iter{iteration.get('id')}_task{i}",
+                "iteration_id": iteration.get("id"),
+                "agent": agent,
+                "file": file_path,
+                "description": task_info.get("description", f"Create {file_path}"),
+                "context_files": [f.name for f in context_files[:3]],
+                "needs_test": task_info.get("needs_test", False),
+                "acceptance_criteria": task_info.get("acceptance_criteria", ["file created", "works correctly"])
+            }
+            tasks.append(task)
+            self._log(f"  ✓ Task {i}: {agent} -> {file_path}")
 
-Now create tasks for these files: {json.dumps(files_expected)}
-Output ONLY the JSON array, nothing else."""
-
-        result = self._run_step(prompt, context_files, label="decompose iteration", timeout=180)
-        tasks = self._parse_tasks(result.get("output", "[]"))
-        
-        # Fallback: if LLM returned empty, create basic tasks from files_expected
-        if not tasks:
-            logger.warning("[planner] LLM returned empty tasks — creating basic tasks from files_expected")
-            tasks = self._minimal_tasks_from_files(iteration, files_expected)
-
+        # Save tasks
         tasks_file = ai_dir / f"tasks_iter_{iteration['id']}.json"
         tasks_file.write_text(json.dumps(tasks, indent=2))
         self.emit_file_written(tasks_file)
@@ -335,33 +303,31 @@ Output ONLY the JSON array, nothing else."""
         self._log(f"Decomposed iteration {iteration.get('id')} into {len(tasks)} tasks")
         return tasks
 
-    def _minimal_tasks_from_files(self, iteration: dict, files: list) -> list[dict]:
-        """Create basic tasks from file list when LLM returns empty."""
-        tasks = []
-        for i, file_path in enumerate(files, 1):
-            # Determine agent based on file type
-            if file_path.endswith(('.py', '.js', '.ts', '.java', '.go', '.rb')):
-                agent = "backend_dev"
-            elif file_path.endswith(('.md', '.txt', '.rst')):
-                agent = "docs_agent"
-            elif file_path.endswith(('.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.env')):
-                agent = "config_agent"
-            elif 'test' in file_path.lower() or 'spec' in file_path.lower():
-                agent = "test_dev"
-            else:
-                agent = "backend_dev"
-            
-            tasks.append({
-                "id": f"iter{iteration.get('id')}_task{i}",
-                "iteration_id": iteration.get('id'),
-                "agent": agent,
-                "file": file_path,
-                "description": f"Create {file_path} — {iteration.get('goal', 'implement iteration')}",
-                "context_files": [],
-                "needs_test": False,
-                "acceptance_criteria": iteration.get("acceptance_criteria", ["file created", "basic functionality works"])[:2]
-            })
-        return tasks
+    def _parse_task_info(self, output: str) -> dict:
+        """Parse task info JSON object."""
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[\s\S]*\}', output)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+        return {}
+
+    def _infer_agent_from_file(self, file_path: str) -> str:
+        """Infer which agent should handle a file based on extension."""
+        if file_path.endswith(('.py', '.js', '.ts', '.java', '.go', '.rb', '.rs')):
+            return "backend_dev"
+        elif file_path.endswith(('.md', '.txt', '.rst')):
+            return "docs_agent"
+        elif file_path.endswith(('.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.env')):
+            return "config_agent"
+        elif 'test' in file_path.lower() or 'spec' in file_path.lower():
+            return "test_dev"
+        else:
+            return "backend_dev"
 
     def _parse_tasks(self, output: str) -> list[dict]:
         """Parse task JSON from LLM output with robust error handling."""

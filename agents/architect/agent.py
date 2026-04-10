@@ -311,6 +311,7 @@ Respond with a detailed architecture description in JSON format:
         return result
 
     def _plan_iterations_impl(self, requirements: str, architecture: str = None) -> list[dict]:
+        """Plan iterations using a chunked, step-by-step approach for reliability."""
         self._log("Planning iterations based on requirements")
         arch_context = architecture or self._determine_architecture_style()
         existing_docs = self._read_existing_docs()
@@ -318,7 +319,8 @@ Respond with a detailed architecture description in JSON format:
         # Build a clear requirements summary
         req_summary = requirements if len(requirements) < 3000 else requirements[:3000] + "\n\n[... truncated ...]"
 
-        prompt = f"""Based on the following requirements, plan concrete implementation iterations.
+        # Step 1: Ask for high-level plan (small response)
+        plan_prompt = f"""Analyze these requirements and tell me the implementation plan structure.
 
 ## Requirements Summary
 {req_summary}
@@ -326,97 +328,112 @@ Respond with a detailed architecture description in JSON format:
 ## Architecture Style
 {arch_context}
 
-## Existing Documentation
-{json.dumps(existing_docs, indent=2) if existing_docs else "No existing documentation found."}
+Respond with ONLY this JSON (small response):
+{{
+  "num_phases": 1,
+  "num_iterations": 2,
+  "complexity": "simple|medium|complex",
+  "rationale": "one sentence why this plan size"
+}}"""
 
-## Your Task
-Create a phased implementation plan with small, testable iterations.
-
-### Rules (MUST FOLLOW):
-1. Each iteration MUST produce working code that can be tested
-2. Start with the absolute minimum: project setup, core data models, main functionality
-3. Each iteration should modify 1-4 files maximum
-4. Keep iterations small and focused
-5. Build incrementally - later iterations depend on earlier ones
-6. For simple projects: 1-2 phases, 2-4 iterations
-7. For medium projects: 2-3 phases, 4-8 iterations
-8. For complex projects: 3+ phases, 8+ iterations
-
-### Output Format (STRICT):
-You MUST output ONLY a valid JSON array. NO markdown, NO code blocks, NO explanations.
-The response must be parseable as JSON starting with '[' and ending with ']'.
-
-### JSON Schema:
-[
-  {{
-    "id": 1,
-    "phase": 1,
-    "name": "short descriptive name (3-6 words)",
-    "goal": "one sentence describing what this iteration achieves",
-    "files_expected": ["relative/path/to/file.py"],
-    "depends_on": [],
-    "acceptance_criteria": ["criterion 1", "criterion 2"]
-  }}
-]
-
-### Example Output:
-[
-  {{
-    "id": 1,
-    "phase": 1,
-    "name": "project setup and core model",
-    "goal": "Initialize project structure and define core data models",
-    "files_expected": ["src/main.py", "src/models.py", "requirements.txt"],
-    "depends_on": [],
-    "acceptance_criteria": ["project runs without errors", "core models defined"]
-  }},
-  {{
-    "id": 2,
-    "phase": 1,
-    "name": "basic functionality implementation",
-    "goal": "Implement the core functionality based on requirements",
-    "files_expected": ["src/handlers.py", "src/utils.py"],
-    "depends_on": [1],
-    "acceptance_criteria": ["main features work", "basic error handling"]
-  }}
-]
-
-Now, analyze the requirements above and create an appropriate implementation plan.
-Output ONLY the JSON array, nothing else."""
-
-        result = self._run_step(prompt, label="plan iterations", timeout=300)
-        iterations = self._parse_iterations(result.get("output", "[]"))
+        plan_result = self._run_step(plan_prompt, label="plan structure", timeout=120)
+        plan_info = self._parse_plan_structure(plan_result.get("output", "{}"))
         
-        # Fallback: if LLM returned empty, create a minimal plan
-        if not iterations:
-            logger.warning("[architect] LLM returned empty iteration plan — creating minimal fallback plan")
-            iterations = self._minimal_fallback_plan(architecture)
+        num_phases = plan_info.get("num_phases", 1)
+        num_iterations = plan_info.get("num_iterations", 2)
         
+        # Sanity check
+        if num_iterations < 1:
+            num_iterations = 2
+        if num_iterations > 20:
+            num_iterations = 10
+
+        self._log(f"Plan: {num_phases} phases, {num_iterations} iterations")
+
+        # Step 2: Generate each iteration one at a time (small responses)
+        iterations = []
+        for i in range(1, num_iterations + 1):
+            # Determine phase (simple distribution)
+            phase = min(1 + (i - 1) // max(1, num_iterations // num_phases), num_phases)
+            
+            # Get previous iterations for context
+            prev_context = json.dumps(iterations[-2:]) if len(iterations) >= 2 else "none"
+            
+            iter_prompt = f"""Create iteration {i} of {num_iterations} (phase {phase}).
+
+## Goal
+{plan_info.get('rationale', 'Implement the requirements')}
+
+## Previous Iterations
+{prev_context}
+
+Respond with ONLY this JSON (small response):
+{{
+  "id": {i},
+  "phase": {phase},
+  "name": "short name 3-6 words",
+  "goal": "one sentence",
+  "files_expected": ["file1.py", "file2.py"],
+  "depends_on": [{max(0, i-1)}],
+  "acceptance_criteria": ["criteria1", "criteria2"]
+}}"""
+
+            iter_result = self._run_step(iter_prompt, label=f"iteration {i}", timeout=90)
+            iteration = self._parse_single_iteration(iter_result.get("output", "{}"))
+            
+            if iteration:
+                iteration["id"] = i  # Ensure correct ID
+                iteration["phase"] = phase
+                if i == 1:
+                    iteration["depends_on"] = []
+                else:
+                    iteration.setdefault("depends_on", [i - 1])
+                iterations.append(iteration)
+                self._log(f"  ✓ Iteration {i}: {iteration.get('name', 'unnamed')}")
+            else:
+                self._log(f"  ✗ Iteration {i} failed — creating minimal version")
+                iterations.append(self._minimal_single_iteration(i, phase))
+
         return iterations
 
-    def _minimal_fallback_plan(self, architecture: str = None) -> list[dict]:
-        """Create a minimal 2-iteration plan when LLM returns empty."""
-        arch = architecture or "monolith"
-        return [
-            {
-                "id": 1,
-                "phase": 1,
-                "name": "project setup and structure",
-                "goal": "Initialize project with basic structure and dependencies",
-                "files_expected": ["main.py", "requirements.txt", "README.md"],
-                "depends_on": [],
-                "acceptance_criteria": ["project structure created", "dependencies installable", "main entry point runs"]
-            },
-            {
-                "id": 2,
-                "phase": 1,
-                "name": "core functionality implementation",
-                "goal": "Implement core features based on requirements",
-                "files_expected": ["core.py", "utils.py"],
-                "depends_on": [1],
-                "acceptance_criteria": ["core features functional", "basic error handling in place"]
-            }
-        ]
+    def _parse_plan_structure(self, output: str) -> dict:
+        """Parse high-level plan structure JSON."""
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            # Try to find JSON in output
+            json_match = re.search(r'\{[\s\S]*\}', output)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+        return {"num_phases": 1, "num_iterations": 2, "complexity": "simple"}
+
+    def _parse_single_iteration(self, output: str) -> dict:
+        """Parse a single iteration JSON object."""
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[\s\S]*\}', output)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+        return {}
+
+    def _minimal_single_iteration(self, iteration_id: int, phase: int) -> dict:
+        """Create a minimal iteration when LLM fails."""
+        return {
+            "id": iteration_id,
+            "phase": phase,
+            "name": f"implement features part {iteration_id}",
+            "goal": "Implement core functionality for this phase",
+            "files_expected": [f"src/part{iteration_id}.py"],
+            "depends_on": [iteration_id - 1] if iteration_id > 1 else [],
+            "acceptance_criteria": ["file created", "runs without errors"]
+        }
 
     def _parse_iterations(self, output: str) -> list[dict]:
         """Parse iteration JSON from LLM output with robust error handling."""
