@@ -15,17 +15,21 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
   const allMessages = useMemo(() => {
     if (!activeAgent) return []
     const msgs = messages[activeAgent] ?? []
+    console.log(`[AgentPanel] ${activeAgent}: ${msgs.length} messages,`, msgs.map(m => ({ id: m.id.slice(0,8), status: m.status, q: m.question?.slice(0,30) })))
     return [...msgs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
   }, [activeAgent, messages])
 
   // Find the most recent pending message
   const currentPending = useMemo(() => {
     const pending = allMessages.filter(m => m.status === 'pending')
+    console.log(`[AgentPanel] ${activeAgent}: ${pending.length} pending messages`)
     if (pending.length === 0) return null
     // Return the one with latest created_at
-    return pending.reduce((latest, m) =>
+    const latest = pending.reduce((latest, m) =>
       new Date(m.created_at) > new Date(latest.created_at) ? m : latest
     )
+    console.log(`[AgentPanel] currentPending: ${latest.id.slice(0,8)} - ${latest.question?.slice(0,50)}`)
+    return latest
   }, [allMessages])
 
   // Show all messages for the active agent
@@ -41,6 +45,13 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       }, 100)
     }
   }, [visibleMessages.length, currentPending?.id])
+
+  // Load full message history when agent is selected
+  useEffect(() => {
+    if (activeAgent && onLoadMessages) {
+      onLoadMessages(activeAgent)
+    }
+  }, [activeAgent, onLoadMessages])
 
   const handleAgentClick = (agentId) => {
     setActiveAgent(agentId)

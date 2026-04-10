@@ -350,7 +350,10 @@ export function WorkspaceLayout() {
   const loadAgentMessages = useCallback(async (agentId) => {
     try {
       const msgs = await api.messages(agentId, 100)
+      console.log(`[chat] loaded ${msgs?.length || 0} messages for ${agentId}`)
       if (msgs && msgs.length > 0) {
+        const pendingCount = msgs.filter(m => m.status === 'pending').length
+        console.log(`[chat] ${pendingCount} pending messages for ${agentId}`)
         setMessages(prev => {
           const existing = prev[agentId] ?? []
           const merged = [...existing]
