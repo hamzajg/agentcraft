@@ -124,8 +124,14 @@ async def get_channels():
 
 @app.get("/api/messages/{agent_id}")
 async def get_messages(agent_id: str, limit: int = 50):
-    """Full message history for one agent channel."""
+    """Full message history for one agent (default: newest 50)."""
     return store.list_by_agent(agent_id, limit)
+
+
+@app.get("/api/messages/{agent_id}/older")
+async def get_older_messages(agent_id: str, before: str = None, limit: int = 20):
+    """Load older messages before a cursor (created_at timestamp)."""
+    return store.list_by_agent_cursor(agent_id, before, limit)
 
 
 @app.get("/api/pending")

@@ -92,6 +92,22 @@ def list_by_agent(agent_id: str, limit: int = 50) -> list[ClarificationMessage]:
     return [_row_to_msg(r) for r in rows]
 
 
+def list_by_agent_cursor(agent_id: str, before: str = None, limit: int = 20) -> list[ClarificationMessage]:
+    """Load older messages before a cursor timestamp."""
+    with _conn() as c:
+        if before:
+            rows = c.execute(
+                "SELECT * FROM messages WHERE agent_id=? AND created_at < ? ORDER BY created_at DESC LIMIT ?",
+                (agent_id, before, limit)
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM messages WHERE agent_id=? ORDER BY created_at DESC LIMIT ?",
+                (agent_id, limit)
+            ).fetchall()
+    return [_row_to_msg(r) for r in rows]
+
+
 def list_pending() -> list[ClarificationMessage]:
     with _conn() as c:
         rows = c.execute(
