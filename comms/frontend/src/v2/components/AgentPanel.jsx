@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { Badge, Avatar } from './ui'
 
-export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply, busMessages = [] }) {
+export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply, busMessages = [], onLoadMessages }) {
   const [showChat, setShowChat] = useState(false)
   const [replyText, setReplyText] = useState('')
   const [localReplies, setLocalReplies] = useState({}) // msgId -> reply text for optimistic updates
@@ -18,17 +18,12 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     return [...msgs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
   }, [activeAgent, messages])
 
-  // Find the most recent pending message (only from recent messages, last 30 min)
+  // Find the most recent pending message
   const currentPending = useMemo(() => {
-    const thirtyMinsAgo = Date.now() - 30 * 60 * 1000
-    const pending = allMessages.filter(m => {
-      if (m.status !== 'pending') return false
-      const createdAt = new Date(m.created_at).getTime()
-      return createdAt > thirtyMinsAgo // Only recent pending messages
-    })
+    const pending = allMessages.filter(m => m.status === 'pending')
     if (pending.length === 0) return null
     // Return the one with latest created_at
-    return pending.reduce((latest, m) => 
+    return pending.reduce((latest, m) =>
       new Date(m.created_at) > new Date(latest.created_at) ? m : latest
     )
   }, [allMessages])
@@ -39,14 +34,10 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     return allMessages.findIndex(m => m.id === currentPending.id)
   }, [allMessages, currentPending])
 
-  // Show messages from currentPending onwards, or last 5 if no pending
+  // Show all messages for the active agent
   const visibleMessages = useMemo(() => {
-    if (allMessages.length === 0) return []
-    if (currentPendingIdx >= 0) {
-      return allMessages.slice(currentPendingIdx)
-    }
-    return allMessages.slice(-5) // Last 5 if no pending
-  }, [allMessages, currentPendingIdx])
+    return allMessages
+  }, [allMessages])
 
   // Auto-scroll
   useEffect(() => {
