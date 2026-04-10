@@ -6,70 +6,82 @@ const OLDER_MESSAGES_LIMIT = 20
 export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply, busMessages = [], onLoadMessages }) {
   const [showChat, setShowChat] = useState(false)
   const [replyText, setReplyText] = useState('')
-  const [localReplies, setLocalReplies] = useState({}) // msgId -> reply text for optimistic updates
-  const [showBusMessages, setShowBusMessages] = useState(false) // toggle for agent-to-agent messages
-  const [olderMessages, setOlderMessages] = useState([]) // loaded via infinite scroll
+  const [localReplies, setLocalReplies] = useState({})
+  const [showBusMessages, setShowBusMessages] = useState(false)
+  const [olderMessages, setOlderMessages] = useState([])
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasMore, setHasMore] = useState(true)
-  const [oldestCursor, setOldestCursor] = useState(null) // created_at of oldest loaded message
+  const [oldestCursor, setOldestCursor] = useState(null)
+  const [userScrolledUp, setUserScrolledUp] = useState(false) // track if user initiated scroll-up
   const messagesContainerRef = useRef(null)
   const messagesEndRef = useRef(null)
   const sentinelRef = useRef(null)
+  const prevLiveCountRef = useRef(0)
 
   const selectedChannel = channels.find(c => c.agent_id === activeAgent)
 
-  // Live messages (from WebSocket/store) — sorted oldest first
-  const liveMessages = useMemo(() => {
+  // All messages from WebSocket store for this agent — sorted oldest first
+  const allStoreMessages = useMemo(() => {
     if (!activeAgent) return []
     const msgs = messages[activeAgent] ?? []
     return [...msgs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
   }, [activeAgent, messages])
 
-  // Find the most recent pending message (always show this)
+  // The last pending message (always visible)
   const currentPending = useMemo(() => {
-    const pending = liveMessages.filter(m => m.status === 'pending')
+    const pending = allStoreMessages.filter(m => m.status === 'pending')
     if (pending.length === 0) return null
     return pending.reduce((latest, m) =>
       new Date(m.created_at) > new Date(latest.created_at) ? m : latest
     )
-  }, [liveMessages])
+  }, [allStoreMessages])
 
-  // All visible messages = older (infinite scroll) + live
+  // Visible messages: only the last pending message + older messages loaded via scroll
   const visibleMessages = useMemo(() => {
-    // Merge older + live, deduplicate by id, sort by created_at
-    const combined = [...olderMessages, ...liveMessages]
+    const items = []
     const seen = new Set()
-    const deduped = []
-    for (const m of combined) {
+
+    // Add older messages (from reverse scroll)
+    for (const m of olderMessages) {
       if (!seen.has(m.id)) {
         seen.add(m.id)
-        deduped.push(m)
+        items.push(m)
       }
     }
-    return deduped.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-  }, [olderMessages, liveMessages])
 
-  // Auto-scroll to bottom when new live messages arrive
+    // Add only the current pending message (not all messages)
+    if (currentPending && !seen.has(currentPending.id)) {
+      seen.add(currentPending.id)
+      items.push(currentPending)
+    }
+
+    return items.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+  }, [olderMessages, currentPending])
+
+  // Detect new messages arriving via WebSocket (for auto-scroll)
   useEffect(() => {
-    if (liveMessages.length > 0) {
+    const count = allStoreMessages.length
+    const isNew = count > prevLiveCountRef.current
+    prevLiveCountRef.current = count
+
+    if (isNew && !userScrolledUp) {
+      // New message arrived, auto-scroll to bottom
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
       }, 100)
     }
-  }, [liveMessages.length, currentPending?.id])
+  }, [allStoreMessages.length, userScrolledUp])
 
-  // Load initial messages when agent is selected
+  // Reset state when agent selection changes
   useEffect(() => {
-    if (activeAgent && onLoadMessages) {
-      onLoadMessages(activeAgent)
-    }
-    // Reset infinite scroll state
     setOlderMessages([])
     setHasMore(true)
     setOldestCursor(null)
-  }, [activeAgent, onLoadMessages])
+    setUserScrolledUp(false)
+    prevLiveCountRef.current = 0
+  }, [activeAgent])
 
-  // Load older messages via cursor pagination
+  // Load older messages via cursor pagination (triggered by scroll)
   const loadOlderMessages = useCallback(async () => {
     if (loadingOlder || !hasMore || !activeAgent) return
     setLoadingOlder(true)
@@ -78,12 +90,15 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       if (oldestCursor) params.set('before', oldestCursor)
       const res = await fetch(`/api/messages/${activeAgent}/older?${params}`)
       const older = await res.json()
+
       if (older.length < OLDER_MESSAGES_LIMIT) {
         setHasMore(false)
       }
       if (older.length > 0) {
-        setOlderMessages(prev => [...older, ...prev])
-        // Update cursor to oldest message in the full set
+        // Prepend older messages (they come back newest-first from API)
+        const reversed = [...older].reverse()
+        setOlderMessages(prev => [...reversed, ...prev])
+
         const allOlder = [...older, ...olderMessages]
         if (allOlder.length > 0) {
           const oldest = allOlder.reduce((min, m) =>
@@ -99,21 +114,33 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     }
   }, [loadingOlder, hasMore, activeAgent, oldestCursor, olderMessages])
 
-  // IntersectionObserver on sentinel at top to trigger loading
+  // IntersectionObserver on sentinel — triggers ONLY when user scrolls up
   useEffect(() => {
     const el = sentinelRef.current
     if (!el || !hasMore) return
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) {
+        if (entry.isIntersecting && userScrolledUp) {
           loadOlderMessages()
         }
       },
-      { root: messagesContainerRef.current, rootMargin: '100px 0px 0px 0px' }
+      { root: messagesContainerRef.current, rootMargin: '150px 0px 0px 0px' }
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [loadOlderMessages, hasMore, visibleMessages.length])
+  }, [loadOlderMessages, hasMore, userScrolledUp])
+
+  // Detect user scrolling up
+  const handleContainerScroll = useCallback((e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+    // If user is more than 200px from bottom, they scrolled up
+    setUserScrolledUp(distanceFromBottom > 200)
+    // If they scrolled back to bottom, reset the flag
+    if (distanceFromBottom < 50) {
+      setUserScrolledUp(false)
+    }
+  }, [])
 
   const handleAgentClick = (agentId) => {
     setActiveAgent(agentId)
@@ -134,7 +161,6 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     const msgId = currentPending.id
     const text = replyText
 
-    // Optimistic update
     setLocalReplies(prev => ({ ...prev, [msgId]: text }))
     setReplyText('')
 
@@ -307,18 +333,29 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       {/* Chat View */}
       {showChat && activeAgent && (
         <>
-          <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3">
-            {/* Sentinel element for IntersectionObserver (triggers loading at top) */}
-            {hasMore && <div ref={sentinelRef} className="h-1" />}
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleContainerScroll}
+            className="flex-1 overflow-y-auto p-3 space-y-3"
+          >
+            {/* Sentinel — triggers loading ONLY when user scrolled up */}
+            {hasMore && userScrolledUp && <div ref={sentinelRef} className="h-1" />}
 
-            {/* Loading indicator for older messages */}
+            {/* Loading indicator */}
             {loadingOlder && (
               <div className="flex items-center justify-center py-2">
                 <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
               </div>
             )}
 
-            {/* Agent-to-Agent collaboration messages (toggleable) */}
+            {/* Hint to scroll up for history */}
+            {hasMore && userScrolledUp && !loadingOlder && (
+              <div className="text-center py-2">
+                <span className="text-xs text-slate-600">Scroll up for older messages</span>
+              </div>
+            )}
+
+            {/* Agent-to-Agent collaboration messages */}
             {showBusMessages && busMessages.length > 0 && (
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
@@ -356,14 +393,13 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
               </div>
             )}
 
-            {/* Visible messages */}
+            {/* Messages */}
             {visibleMessages.map((msg) => {
               const isCurrentPending = msg.id === currentPending?.id
               const userReply = localReplies[msg.id] || msg.reply
 
               return (
                 <div key={msg.id} className="space-y-2">
-                  {/* Agent message */}
                   <div className={`rounded-xl border p-3 ${
                     isCurrentPending && !userReply
                       ? 'border-amber/30 bg-amber/5'
@@ -389,7 +425,6 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                       {msg.question}
                     </p>
 
-                    {/* Suggestions - only for current pending without reply */}
                     {msg.suggestions?.length > 0 && isCurrentPending && !userReply && (
                       <div className="border-t border-slate-700/50 pt-2 mt-2">
                         <p className="text-xs text-slate-500 mb-1.5">Quick replies:</p>
@@ -409,7 +444,6 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                     )}
                   </div>
 
-                  {/* User reply */}
                   {userReply && (
                     <div className="rounded-xl border border-teal/30 bg-teal/5 p-3 ml-6">
                       <div className="flex items-center gap-1.5 mb-1.5">
@@ -434,7 +468,9 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                 <svg className="w-12 h-12 mb-4 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                 </svg>
-                <p className="text-sm">No messages yet</p>
+                <p className="text-sm">
+                  {currentPending ? 'Loading...' : 'No messages yet'}
+                </p>
               </div>
             )}
             <div ref={messagesEndRef} />
