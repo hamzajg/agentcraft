@@ -28,12 +28,6 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     )
   }, [allMessages])
 
-  // Find the index of currentPending in allMessages
-  const currentPendingIdx = useMemo(() => {
-    if (!currentPending) return -1
-    return allMessages.findIndex(m => m.id === currentPending.id)
-  }, [allMessages, currentPending])
-
   // Show all messages for the active agent
   const visibleMessages = useMemo(() => {
     return allMessages
