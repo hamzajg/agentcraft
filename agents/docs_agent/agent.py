@@ -274,6 +274,26 @@ Let the LLM decide appropriate phases based on the project complexity:
 ### Project Structure
 Recommended directory/file structure for the codebase.
 
+**CRITICAL RULES for Project Structure section:**
+- Use a simple indented text list (NOT a code block or `tree` command output).
+- Use 2-space indentation per level.
+- Prefix directories with a trailing `/`.
+- Prefix files with NO trailing slash.
+- Keep the tree to the top ~20-30 entries — only the most important files/folders.
+- Do NOT include every possible file — only the core structure.
+- Example format:
+```
+src/
+  main.py
+  utils/
+    helpers.py
+    config.py
+tests/
+  test_main.py
+README.md
+```
+- Stay focused — do NOT add files or folders that aren't implied by the requirements.
+
 ### Key Milestones
 - Milestone 1: [What ships in first iteration]
 - Milestone 2: [What ships in second iteration]

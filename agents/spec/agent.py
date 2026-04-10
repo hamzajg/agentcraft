@@ -194,7 +194,7 @@ class SpecAgent(AiderAgent):
 
         # Step 1: proposal (why + what)
         logger.info("[spec] openspec step 1/3 — proposal")
-        self.run(
+        result1 = self.run(
             message=(
                 f"Write an OpenSpec proposal for project '{project_name}'.\n\n"
                 "Sections:\n"
@@ -208,10 +208,16 @@ class SpecAgent(AiderAgent):
             timeout=90,
         )
 
+        if not result1.get("success") or not proposal_file.exists() or proposal_file.stat().st_size == 0:
+            logger.error("[spec] openspec step 1 failed - proposal.md is empty or not created")
+            if proposal_file.exists():
+                proposal_file.unlink()
+            return None, None
+
         # Step 2: delta spec (requirements)
         logger.info("[spec] openspec step 2/3 — delta spec")
-        ctx = doc_files + ([proposal_file] if proposal_file.exists() else [])
-        self.run(
+        ctx = doc_files + [proposal_file]
+        result2 = self.run(
             message=(
                 f"Write an OpenSpec delta spec for domain '{domain}'.\n\n"
                 "Format:\n"
@@ -229,6 +235,12 @@ class SpecAgent(AiderAgent):
             edit_files=[delta_spec_file],
             timeout=120,
         )
+
+        if not result2.get("success") or not delta_spec_file.exists() or delta_spec_file.stat().st_size == 0:
+            logger.error("[spec] openspec step 2 failed - delta spec.md is empty or not created")
+            if delta_spec_file.exists():
+                delta_spec_file.unlink()
+            return None, None
 
         # Copy to source-of-truth
         if delta_spec_file.exists():
