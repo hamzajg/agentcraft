@@ -965,29 +965,28 @@ Respond with JSON:
         logger.info("[orchestrator] PHASE 0: spec...")
         self._comms.info("Starting Phase: Specification (generating spec.md and use_cases.md)")
         spec_file, uc_file = self.spec_agent.specify(self.docs_dir)
-        
-        # Ensure files exist (create stubs if missing/empty - tolerate aider LLM failures)
+
+        # Last-resort: if spec agent exhausted retries and files are still empty, create stubs
         ai_dir = self.workspace / ".ai"
         for f in [spec_file, uc_file]:
-            if not f.exists() or f.stat().st_size == 0:
-                logger.warning(f"[orchestrator] creating stub {f.name} (aider wrote empty/missing)")
-                f.write_text(f"# {f.name}\n\n_Aider spec generation incomplete. Supervisor will handle._")
-        
-        logger.info(f"[orchestrator] spec files ready (may be stubs): spec.md={spec_file.stat().st_size}b, uc={uc_file.stat().st_size if uc_file else 0}b")
+            if f is not None and (not f.exists() or f.stat().st_size == 0):
+                logger.warning(f"[orchestrator] spec agent exhausted retries — creating stub {f.name}")
+                f.write_text(f"# {f.name}\n\n_Generation failed after multiple retries._")
+
         ES.emit("phase_done", {"phase": 0, "duration_s": round(time.time() - start, 1)})
-        
-        if spec_file.exists():
+
+        if spec_file and spec_file.exists() and spec_file.stat().st_size > 0:
             da = self._make(DocsAgent)
             da.run(
-                message="Review and enrich spec.md and use_cases.md. Add missing content if stubs.",
+                message="Review and enrich spec.md and use_cases.md.",
                 read_files=list(self.docs_dir.glob("*.md")),
-                edit_files=[spec_file] + ([uc_file] if uc_file.exists() else []),
+                edit_files=[spec_file] + ([uc_file] if uc_file and uc_file.exists() else []),
                 timeout=180,
                 log_callback=self.log_callback,
             )
-        
-        results = [f for f in [spec_file, uc_file] if f.exists()]
-        self._comms.complete(f"Specification complete: {len(results)} files (stubs OK)")
+
+        results = [f for f in [spec_file, uc_file] if f and f.exists()]
+        self._comms.complete(f"Specification complete: {len(results)} files generated")
         return results
 
     # ── Iteration ─────────────────────────────────────────────────────────────

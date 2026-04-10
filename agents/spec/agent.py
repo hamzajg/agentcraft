@@ -24,6 +24,9 @@ SYSTEM_PROMPT = (
     else "You are the Spec Agent. Create precise, unambiguous specification documents from requirements."
 )
 
+# Number of times to retry a step before giving up
+MAX_STEP_RETRIES = 3
+
 
 def _ensure_file(path: Path) -> Path:
     """Ensure file exists with parent directories (like docs_agent and other agents do)."""
@@ -201,6 +204,50 @@ class SpecAgent(AiderAgent):
 
     # ── Internal step methods (default flow) ─────────────────────────────
 
+    def _run_step_with_retry(self, message: str, read_files: list[Path],
+                               output_path: Path, label: str,
+                               timeout: int = 180) -> bool:
+        """Run aider with retry logic: up to MAX_STEP_RETRIES attempts with escalating prompts."""
+        last_error = ""
+
+        for attempt in range(1, MAX_STEP_RETRIES + 1):
+            # On retry, escalate the prompt to be more explicit
+            if attempt > 1:
+                logger.warning("[spec] %s — retry %d/%d (prev: %s)",
+                               label, attempt, MAX_STEP_RETRIES, last_error)
+                # Clear the file for a fresh attempt
+                output_path.write_text("")
+                # Escalate prompt for retry
+                retry_message = (
+                    f"IMPORTANT: You must write content to the file '{output_path.name}'.\n\n"
+                    f"Previous attempt did not produce valid content. This is attempt {attempt}/{MAX_STEP_RETRIES}.\n\n"
+                    f"{message}\n\n"
+                    f"CRITICAL: You MUST create actual content — do NOT write placeholder comments, "
+                    f"empty sections, or stubs. Write real, substantive specification content now."
+                )
+            else:
+                retry_message = message
+
+            result = self.run(
+                message=retry_message,
+                read_files=read_files,
+                edit_files=[output_path],
+                timeout=timeout,
+                log_callback=self.log_callback,
+            )
+
+            if self._check_result(result, output_path, f"{label} (attempt {attempt})"):
+                return True
+
+            # Capture what went wrong for the next retry
+            if not result.get("success"):
+                last_error = f"aider exit code={result.get('exit_code', -1)}"
+            else:
+                last_error = "file was empty after aider succeeded"
+
+        logger.error("[spec] %s — all %d retries exhausted", label, MAX_STEP_RETRIES)
+        return False
+
     def _extract_entities(self, doc_files: list[Path], ai_dir: Path) -> Path | None:
         """Step 1: Extract key entities from docs — fast, focused."""
         entities_file = _ensure_file(ai_dir / "entities.md")
@@ -208,7 +255,7 @@ class SpecAgent(AiderAgent):
 
         logger.info("[spec] step 1/3 — extract entities (%d docs)", len(doc_files))
 
-        result = self.run(
+        ok = self._run_step_with_retry(
             message=(
                 "Read the provided documents. List the main entities (nouns) this system works with.\n"
                 "Format: one entity per line, with a 1-sentence description.\n"
@@ -216,20 +263,18 @@ class SpecAgent(AiderAgent):
                 "Write the entity list to the file provided."
             ),
             read_files=doc_files,
-            edit_files=[entities_file],
+            output_path=entities_file,
+            label="entities.md",
             timeout=180,
-            log_callback=self.log_callback,
         )
 
-        if not self._check_result(result, entities_file, "entities.md"):
-            return None
-        return entities_file
+        return entities_file if ok else None
 
     def _write_spec_file(self, output_path: Path, context: list[Path]) -> bool:
         """Step 2: Write spec.md using entities as scaffold."""
         logger.info("[spec] step 2/3 — write spec.md")
 
-        result = self.run(
+        return self._run_step_with_retry(
             message=(
                 "Write the project specification.\n\n"
                 "Include these sections (adapt to the project type):\n"
@@ -244,18 +289,16 @@ class SpecAgent(AiderAgent):
                 "Keep it short. One sentence per point. No filler."
             ),
             read_files=context,
-            edit_files=[output_path],
+            output_path=output_path,
+            label="spec.md",
             timeout=1200,
-            log_callback=self.log_callback,
         )
-
-        return self._check_result(result, output_path, "spec.md")
 
     def _write_use_cases_file(self, output_path: Path, context: list[Path]) -> bool:
         """Step 3: Write 3 most important use cases."""
         logger.info("[spec] step 3/3 — write use cases")
 
-        result = self.run(
+        return self._run_step_with_retry(
             message=(
                 "Write use_cases.md with the 3 most important use cases.\n\n"
                 "Each use case format:\n"
@@ -267,12 +310,10 @@ class SpecAgent(AiderAgent):
                 "Keep each case to 6 lines max. Focus on the critical paths."
             ),
             read_files=context,
-            edit_files=[output_path],
+            output_path=output_path,
+            label="use_cases.md",
             timeout=1200,
-            log_callback=self.log_callback,
         )
-
-        return self._check_result(result, output_path, "use_cases.md")
 
     # ── Internal step methods (OpenSpec flow) ────────────────────────────
 
@@ -282,7 +323,7 @@ class SpecAgent(AiderAgent):
         """Step 1: Write OpenSpec proposal (why + what)."""
         logger.info("[spec] openspec step 1/3 — proposal")
 
-        result = self.run(
+        return self._run_step_with_retry(
             message=(
                 f"Write an OpenSpec proposal for project '{project_name}'.\n\n"
                 "Sections:\n"
@@ -292,12 +333,10 @@ class SpecAgent(AiderAgent):
                 "Keep it under 200 words."
             ),
             read_files=doc_files,
-            edit_files=[output_path],
+            output_path=output_path,
+            label="proposal.md",
             timeout=180,
-            log_callback=self.log_callback,
         )
-
-        return self._check_result(result, output_path, "proposal.md")
 
     def _write_openspec_delta_spec(
         self, output_path: Path, context: list[Path], domain: str
@@ -305,7 +344,7 @@ class SpecAgent(AiderAgent):
         """Step 2: Write OpenSpec delta spec (requirements + scenarios)."""
         logger.info("[spec] openspec step 2/3 — delta spec")
 
-        result = self.run(
+        return self._run_step_with_retry(
             message=(
                 f"Write an OpenSpec delta spec for domain '{domain}'.\n\n"
                 "Format:\n"
@@ -320,12 +359,10 @@ class SpecAgent(AiderAgent):
                 "Write 5-8 requirements. Keep each scenario to 3 lines."
             ),
             read_files=context,
-            edit_files=[output_path],
+            output_path=output_path,
+            label="delta spec.md",
             timeout=180,
-            log_callback=self.log_callback,
         )
-
-        return self._check_result(result, output_path, "delta spec.md")
 
     # ── Utilities ────────────────────────────────────────────────────────
 
