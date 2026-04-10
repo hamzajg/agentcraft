@@ -8,11 +8,13 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
   const [replyText, setReplyText] = useState('')
   const [localReplies, setLocalReplies] = useState({})
   const [showBusMessages, setShowBusMessages] = useState(false)
+  const [unreadBusCount, setUnreadBusCount] = useState(0)
+  const [seenBusMsgIds, setSeenBusMsgIds] = useState(new Set())
   const [olderMessages, setOlderMessages] = useState([])
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [oldestCursor, setOldestCursor] = useState(null)
-  const [userScrolledUp, setUserScrolledUp] = useState(false) // track if user initiated scroll-up
+  const [userScrolledUp, setUserScrolledUp] = useState(false)
   const messagesContainerRef = useRef(null)
   const messagesEndRef = useRef(null)
   const sentinelRef = useRef(null)
@@ -35,6 +37,38 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       new Date(m.created_at) > new Date(latest.created_at) ? m : latest
     )
   }, [allStoreMessages])
+
+  // Agent-to-agent messages for the active agent
+  const agentBusMessages = useMemo(() => {
+    if (!activeAgent) return []
+    return busMessages
+      .filter(m => m.from_agent === activeAgent || m.to_agent === activeAgent)
+      .sort((a, b) => new Date(b.time) - new Date(a.time)) // newest first
+  }, [activeAgent, busMessages])
+
+  // Count unread bus messages (messages that arrived since last viewed)
+  useEffect(() => {
+    if (!activeAgent) return
+    const now = agentBusMessages.map(m => m.id)
+    const newMsgs = now.filter(id => !seenBusMsgIds.has(id))
+    setUnreadBusCount(newMsgs.length)
+  }, [agentBusMessages.length, activeAgent])
+
+  // Mark bus messages as seen when user opens the bus panel
+  const markBusMessagesSeen = useCallback(() => {
+    const newSeen = new Set(seenBusMsgIds)
+    for (const m of agentBusMessages) newSeen.add(m.id)
+    setSeenBusMsgIds(newSeen)
+    setUnreadBusCount(0)
+  }, [agentBusMessages, seenBusMsgIds])
+
+  const handleBusToggle = useCallback(() => {
+    setShowBusMessages(prev => {
+      const next = !prev
+      if (next) markBusMessagesSeen()
+      return next
+    })
+  }, [markBusMessagesSeen])
 
   // Visible messages: only the last pending message + older messages loaded via scroll
   const visibleMessages = useMemo(() => {
@@ -65,7 +99,6 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     prevLiveCountRef.current = count
 
     if (isNew && !userScrolledUp) {
-      // New message arrived, auto-scroll to bottom
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
       }, 100)
@@ -79,6 +112,11 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     setOldestCursor(null)
     setUserScrolledUp(false)
     prevLiveCountRef.current = 0
+    // Mark current bus messages as seen when switching agents
+    const newSeen = new Set(seenBusMsgIds)
+    for (const m of agentBusMessages) newSeen.add(m.id)
+    setSeenBusMsgIds(newSeen)
+    setUnreadBusCount(0)
   }, [activeAgent])
 
   // Load older messages via cursor pagination (triggered by scroll)
@@ -95,7 +133,6 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
         setHasMore(false)
       }
       if (older.length > 0) {
-        // Prepend older messages (they come back newest-first from API)
         const reversed = [...older].reverse()
         setOlderMessages(prev => [...reversed, ...prev])
 
@@ -134,9 +171,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
   const handleContainerScroll = useCallback((e) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-    // If user is more than 200px from bottom, they scrolled up
     setUserScrolledUp(distanceFromBottom > 200)
-    // If they scrolled back to bottom, reset the flag
     if (distanceFromBottom < 50) {
       setUserScrolledUp(false)
     }
@@ -200,6 +235,19 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     }
   }
 
+  // Bus message type badge config
+  const busTypeBadge = (type) => {
+    const map = {
+      agent_query:   { label: 'query',    bg: 'bg-amber/10',    text: 'text-amber' },
+      agent_reply:   { label: 'reply',    bg: 'bg-teal/10',     text: 'text-teal' },
+      agent_delegate:{ label: 'delegate', bg: 'bg-violet/10',   text: 'text-violet' },
+      agent_context: { label: 'context',  bg: 'bg-blue/10',     text: 'text-blue' },
+      agent_broadcast:{ label: 'broadcast',bg: 'bg-cyan/10',    text: 'text-cyan' },
+    }
+    const cfg = map[type] || { label: type.replace('agent_', ''), bg: 'bg-slate-700', text: 'text-slate-400' }
+    return cfg
+  }
+
   return (
     <div className="h-full flex flex-col bg-slate-950">
       {/* Header */}
@@ -236,9 +284,10 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                     {statuses[activeAgent] || 'idle'}
                   </p>
                 </div>
+                {/* Agent-to-Agent toggle with unread badge */}
                 <button
-                  onClick={() => setShowBusMessages(!showBusMessages)}
-                  className={`p-1.5 rounded-lg transition-colors ${
+                  onClick={handleBusToggle}
+                  className={`relative p-1.5 rounded-lg transition-colors ${
                     showBusMessages ? 'bg-violet/20 text-violet' : 'text-slate-500 hover:text-slate-300'
                   }`}
                   title="Show agent-to-agent collaboration"
@@ -249,6 +298,11 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                     <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
                     <path d="M16 3.13a4 4 0 0 1 0 7.75" />
                   </svg>
+                  {unreadBusCount > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-violet text-white text-[9px] font-bold rounded-full flex items-center justify-center animate-pulse">
+                      {unreadBusCount > 9 ? '9+' : unreadBusCount}
+                    </span>
+                  )}
                 </button>
               </>
             )}
@@ -275,13 +329,16 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                 const status = statuses[channel.agent_id] || 'idle'
                 const agentMessages = messages[channel.agent_id] || []
                 const hasPending = agentMessages.some(m => m.status === 'pending')
+                const pendingCount = agentMessages.filter(m => m.status === 'pending').length
                 const lastMsg = [...agentMessages].sort((a, b) =>
                   new Date(b.created_at) - new Date(a.created_at)
                 )[0]
 
-                const recentCollaboration = busMessages.filter(
+                // Agent-to-agent messages count for this agent
+                const agentBus = busMessages.filter(
                   m => m.from_agent === channel.agent_id || m.to_agent === channel.agent_id
-                ).slice(0, 3)
+                )
+                const unseenBus = agentBus.filter(m => !seenBusMsgIds.has(m.id))
 
                 return (
                   <button
@@ -302,16 +359,24 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
                         <p className="text-sm font-medium text-slate-200 truncate">
                           {channel.agent_label || channel.agent_id}
                         </p>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {recentCollaboration.length > 0 && status === 'running' && (
-                            <span className="text-[10px] text-violet/70 flex items-center gap-0.5" title="Active collaboration">
-                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {/* Agent-to-agent badge */}
+                          {unseenBus.length > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-violet/20 text-violet text-[10px] font-semibold flex items-center gap-0.5">
+                              <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                               </svg>
+                              {unseenBus.length}
                             </span>
                           )}
+                          {/* Pending badge */}
                           {hasPending && (
-                            <span className="w-2 h-2 rounded-full bg-amber animate-pulse" />
+                            <span className="flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-amber animate-pulse" />
+                              {pendingCount > 1 && (
+                                <span className="text-[10px] text-amber">{pendingCount}</span>
+                              )}
+                            </span>
                           )}
                         </div>
                       </div>
@@ -348,47 +413,47 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
               </div>
             )}
 
-            {/* Hint to scroll up for history */}
-            {hasMore && userScrolledUp && !loadingOlder && (
-              <div className="text-center py-2">
-                <span className="text-xs text-slate-600">Scroll up for older messages</span>
-              </div>
-            )}
-
             {/* Agent-to-Agent collaboration messages */}
-            {showBusMessages && busMessages.length > 0 && (
+            {showBusMessages && agentBusMessages.length > 0 && (
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Agent Collaboration</h3>
-                  <span className="text-xs text-slate-600">{busMessages.length} messages</span>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Agent Collaboration</h3>
+                    {unreadBusCount > 0 && (
+                      <Badge variant="warning" className="text-[10px] animate-pulse">{unreadBusCount} new</Badge>
+                    )}
+                  </div>
+                  <span className="text-xs text-slate-600">{agentBusMessages.length} messages</span>
                 </div>
                 <div className="space-y-1.5">
-                  {busMessages.slice(0, 20).map((msg) => (
-                    <div key={msg.id} className="rounded-lg border border-slate-800/50 bg-slate-900/20 p-2 text-xs">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${
-                          msg.type === 'agent_query' ? 'bg-amber/10 text-amber' :
-                          msg.type === 'agent_reply' ? 'bg-teal/10 text-teal' :
-                          msg.type === 'agent_delegate' ? 'bg-violet/10 text-violet' :
-                          msg.type === 'agent_context' ? 'bg-blue/10 text-blue' :
-                          'bg-slate-700 text-slate-400'
-                        }`}>
-                          {msg.type.replace('agent_', '')}
-                        </span>
-                        <Avatar name={msg.from_agent} size="xs" />
-                        <span className="text-slate-400">@{msg.from_agent}</span>
-                        {msg.to_agent && (
-                          <>
-                            <span className="text-slate-600">→</span>
-                            <Avatar name={msg.to_agent} size="xs" />
-                            <span className="text-slate-400">@{msg.to_agent}</span>
-                          </>
-                        )}
-                        <span className="text-slate-600 ml-auto">{formatTime(msg.time)}</span>
+                  {agentBusMessages.slice(0, 30).map((msg) => {
+                    const cfg = busTypeBadge(msg.type)
+                    const isUnread = !seenBusMsgIds.has(msg.id)
+                    return (
+                      <div key={msg.id} className={`rounded-lg border p-2 text-xs transition-colors ${
+                        isUnread
+                          ? 'border-violet/30 bg-violet/5'
+                          : 'border-slate-800/50 bg-slate-900/20'
+                      }`}>
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${cfg.bg} ${cfg.text}`}>
+                            {cfg.label}
+                          </span>
+                          <Avatar name={msg.from_agent} size="xs" />
+                          <span className="text-slate-400">@{msg.from_agent}</span>
+                          {msg.to_agent && (
+                            <>
+                              <span className="text-slate-600">→</span>
+                              <Avatar name={msg.to_agent} size="xs" />
+                              <span className="text-slate-400">@{msg.to_agent}</span>
+                            </>
+                          )}
+                          <span className="text-slate-600 ml-auto">{formatTime(msg.time)}</span>
+                        </div>
+                        <p className="text-slate-300">{msg.text}</p>
                       </div>
-                      <p className="text-slate-300">{msg.text}</p>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             )}
