@@ -25,18 +25,52 @@ Run `agentcraft <command> --help` for options.
 import argparse
 import sys
 import os
+import re
 from pathlib import Path
 
-# Ensure repo root is on sys.path
-ROOT = Path(__file__).parent.resolve()
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# AgentCraft installation directory (where this script lives)
+AGENTCRAFT_HOME = Path(__file__).parent.resolve()
+if str(AGENTCRAFT_HOME) not in sys.path:
+    sys.path.insert(0, str(AGENTCRAFT_HOME))
+
+# Try to import yaml, install if needed
+try:
+    import yaml
+except ImportError:
+    import subprocess
+    subprocess.run([sys.executable, "-m", "pip", "install", "pyyaml", "-q"], check=True)
+    import yaml
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def _to_kebab_case(name: str) -> str:
+    """Convert a string to kebab-case."""
+    # Lowercase, replace spaces/special chars with hyphens
+    s = name.lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    return s or "my-project"
+
+
+def _find_workspace_root(start: Path = None) -> Path:
+    """Walk up from start (or CWD) looking for workspace.yaml.
+    Returns the directory containing workspace.yaml, or None."""
+    cur = start or Path.cwd()
+    for d in [cur] + list(cur.parents):
+        if (d / "workspace.yaml").exists():
+            return d
+    return None
+
+
 def _workspace_yaml() -> Path:
-    return ROOT / "workspace.yaml"
+    """Return path to workspace.yaml — checks CWD first, then AGENTCRAFT_HOME."""
+    # 1. Check if we're inside a workspace-repo (has workspace.yaml)
+    ws = _find_workspace_root()
+    if ws:
+        return ws / "workspace.yaml"
+    # 2. Fallback: legacy behaviour — agentcraft home dir
+    return AGENTCRAFT_HOME / "workspace.yaml"
 
 
 def _load_ws() -> dict:
@@ -44,51 +78,73 @@ def _load_ws() -> dict:
     if not p.exists():
         return {}
     try:
-        import yaml
         return yaml.safe_load(p.read_text()) or {}
     except Exception:
         return {}
 
 
 def _require_yaml(parser):
-    if not _workspace_yaml().exists():
+    ws_root = _find_workspace_root()
+    if not ws_root or not (ws_root / "workspace.yaml").exists():
         parser.error(
             "workspace.yaml not found.\n"
-            "  Run: agentcraft init   to create one for your project."
+            "  Run: agentcraft init   to create a workspace."
         )
 
 
 # ── init ──────────────────────────────────────────────────────────────────────
 
 def cmd_init(args):
-    """Interactive project initialisation."""
-    print("\n  AgentCraft — Project Initialisation\n")
+    """Interactive project initialisation — creates an isolated workspace-repo."""
+    print("\n  AgentCraft — Workspace Initialisation\n")
 
     ws = _load_ws()
     existing = bool(ws)
 
     if existing:
-        print(f"  Found existing workspace.yaml for project: {ws.get('project', {}).get('name', '?')}")
+        ws_path = _workspace_yaml()
+        ws_root = ws_path.parent
+        print(f"  Found existing workspace: {ws_root}")
+        print(f"  Project: {ws.get('project', {}).get('name', '?')}")
         if not args.force:
             ans = input("  Re-initialise? [y/N] ").strip().lower()
             if ans != "y":
                 print("  Aborted.")
                 return
 
-    name        = input("  Project name:           ").strip() or "my-project"
-    ptype       = input("  Type [greenfield/legacy] (default: greenfield): ").strip() or "greenfield"
-    architecture = input("  Architecture architecture (default: monolith): ").strip() or "monolith"
-    docs        = input("  Docs directory          (default: ./docs): ").strip() or "./docs"
-    model       = input("  Ollama model            (default: auto-detect): ").strip()
+    # Collect project info
+    name        = input("  Project name:                    ").strip() or "my-project"
+    repo_name   = input(f"  Workspace repo name              (default: {_to_kebab_case(name)}): ").strip() or _to_kebab_case(name)
+    ptype       = input("  Type [greenfield/legacy]         (default: greenfield): ").strip() or "greenfield"
+    architecture = input("  Architecture                     (default: monolith): ").strip() or "monolith"
+    docs        = input("  Docs directory                   (default: ./docs): ").strip() or "./docs"
+    model       = input("  Ollama model                     (default: auto-detect): ").strip()
     framework   = input("  Framework [bmad-method/openspec/none] (default: none): ").strip() or ""
 
-    import yaml
+    # Determine workspace directory
+    ws_dir = AGENTCRAFT_HOME / repo_name
+    if ws_dir.exists() and (ws_dir / "workspace.yaml").exists():
+        if not args.force:
+            print(f"\n  ⚠ Workspace already exists: {ws_dir}")
+            ans = input("  Overwrite? [y/N] ").strip().lower()
+            if ans != "y":
+                print("  Aborted.")
+                return
 
+    # Create workspace directory structure
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    (ws_dir / ".ai").mkdir(exist_ok=True)
+    (ws_dir / docs.lstrip("./")).mkdir(parents=True, exist_ok=True)
+
+    # Write workspace.yaml inside the workspace-repo
     ws_data = {
         "project": {
             "name": name,
             "type": ptype,
             "architecture": architecture,
+        },
+        "workspace": {
+            "repo": repo_name,
         },
         "paths": {
             "docs":   docs,
@@ -112,46 +168,61 @@ def cmd_init(args):
                 "**/*.java", "**/pom.xml", "**/Dockerfile",
                 "**/docker-compose.yml", "**/.github/workflows/*.yml", "**/Makefile",
             ],
-            "human_paths":  ["docs/", "agents/", "core/", "comms/", "frameworks/", "skills/"],
-            "agent_paths":  ["api-gateway/", "openspec/", "cli/"],
+            "human_paths":  ["docs/"],
+            "agent_paths":  ["src/", "openspec/"],
         },
     }
 
-    _workspace_yaml().write_text(yaml.dump(ws_data, default_flow_style=False))
-    print(f"\n  Created workspace.yaml for '{name}'")
+    (ws_dir / "workspace.yaml").write_text(yaml.dump(ws_data, default_flow_style=False))
+    print(f"\n  ✓ Workspace created: {ws_dir}")
+    print(f"  ✓ workspace.yaml   → {ws_dir / 'workspace.yaml'}")
+    print(f"  ✓ docs/            → {ws_dir / docs.lstrip('./')}")
+    print(f"  ✓ .ai/             → {ws_dir / '.ai'}")
 
-    # Create docs directory if needed
-    docs_path = ROOT / docs.lstrip("./")
-    if not docs_path.exists():
-        docs_path.mkdir(parents=True)
-        print(f"  Created {docs}/")
-        print(f"  Add your project docs to {docs}/ before running: agentcraft build")
+    # Create symlink to agentcraft inside workspace for easy access
+    symlink = ws_dir / "agentcraft"
+    if not symlink.exists():
+        try:
+            symlink.symlink_to(AGENTCRAFT_HOME / "agentcraft")
+            print(f"  ✓ agentcraft link  → {AGENTCRAFT_HOME / 'agentcraft'}")
+        except OSError as e:
+            print(f"  ⚠ Could not create agentcraft symlink: {e}")
+            print(f"    Use the global agentcraft command instead.")
 
-    # Handle --deps flag for dependency installation
+    print(f"""
+  Workspace ready. Next steps:
+    cd {repo_name}
+    agentcraft diagnose       detect hardware, select models
+    agentcraft build          validate and pull models
+    agentcraft bootstrap      run the agent team
+    agentcraft comms          start the chat UI
+
+  Or install dependencies:
+    agentcraft init --deps    install Python packages + aider
+""")
+
+    # Handle --deps flag
     if args.deps:
         print("\n  Installing Python dependencies...")
         import subprocess
         try:
-            # Install requirements
             result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"],
-                cwd=str(ROOT),
+                [sys.executable, "-m", "pip", "install", "-q", "-r", AGENTCRAFT_HOME / "requirements.txt"],
+                cwd=str(ws_dir),
                 capture_output=True,
                 text=True
             )
             if result.returncode == 0:
                 print("  ✓ Python dependencies installed")
-                
-                # Check for aider specifically
+
                 import shutil
                 if shutil.which("aider"):
-                    print("  ✓ aider available (ready for agentcraft build)")
+                    print("  ✓ aider available")
                 else:
-                    # Try to install aider if pip install didn't get it
                     print("  Installing aider...")
                     result = subprocess.run(
                         [sys.executable, "-m", "pip", "install", "-q", "aider-chat"],
-                        cwd=str(ROOT),
+                        cwd=str(ws_dir),
                         capture_output=True,
                         text=True
                     )
@@ -163,16 +234,6 @@ def cmd_init(args):
                 print(f"  ⚠ Dependency installation had issues: {result.stderr}")
         except Exception as e:
             print(f"  ⚠ Error during dependency installation: {e}")
-
-    print("""
-  Next steps:
-    agentcraft diagnose       detect hardware, select models
-    agentcraft build          run the agent team
-    agentcraft comms          start the chat UI
-    
-  Or if you haven't installed dependencies yet:
-    agentcraft init --deps    install Python packages + aider
-""")
 
 
 
@@ -194,6 +255,11 @@ def cmd_build(args):
     """Prepare workspace, validate config, pull models — no agent execution."""
     import shutil
 
+    ws_root = _find_workspace_root()
+    if not ws_root:
+        print("  ✗ No workspace found — run: agentcraft init")
+        sys.exit(1)
+
     ws = _load_ws()
     _require_yaml(build_parser)
 
@@ -204,14 +270,15 @@ def cmd_build(args):
 
     model     = args.model     or team.get("model", "qwen2.5-coder:7b")
     framework = args.framework or team.get("framework")
-    docs_dir  = ROOT / paths.get("docs", "docs")
-    workspace = ROOT / paths.get("output", ".")
+    docs_dir  = ws_root / paths.get("docs", "docs")
+    workspace = ws_root / paths.get("output", ".")
 
     if args.rag:   rag_cfg["enabled"] = True
     if args.no_rag: rag_cfg["enabled"] = False
 
     print(f"\n  {'='*60}")
     print(f"  Build — {project.get('name', '?')}")
+    print(f"  Workspace:  {ws_root}")
     print(f"  {'='*60}")
 
     # ── 1. Validate workspace ────────────────────────────────────────────
@@ -273,7 +340,7 @@ def cmd_build(args):
             sys.exit(1)
 
     # ── 5. Ready ────────────────────────────────────────────────────────
-    (ROOT / ".ai").mkdir(exist_ok=True)
+    (ws_root / ".ai").mkdir(exist_ok=True)
 
     print(f"\n  {'='*60}")
     print(f"  Build complete — workspace ready")
@@ -289,13 +356,11 @@ def cmd_build(args):
 # ── helpers: checkpoint detection ───────────────────────────────────────────
 
 def _detect_checkpoint() -> int:
-    """Auto-detect resume point from the persistent event store.
-
-    Reads .ai/events.jsonl and replays events to find the last
-    approved iteration. Returns the next iteration to start from.
-    Falls back to run_log.json if events.jsonl doesn't exist.
-    """
-    events_path = ROOT / ".ai" / "events.jsonl"
+    """Auto-detect resume point from the persistent event store."""
+    ws_root = _find_workspace_root()
+    if not ws_root:
+        return 1
+    events_path = ws_root / ".ai" / "events.jsonl"
 
     # Try event store first
     if events_path.exists():
@@ -353,7 +418,7 @@ def _detect_checkpoint() -> int:
             print(f"  Warning: Event store read failed: {e}")
 
     # Fallback: read run_log.json
-    log_path = ROOT / ".ai" / "run_log.json"
+    log_path = ws_root / ".ai" / "run_log.json"
     if not log_path.exists():
         return 1
     try:
@@ -374,8 +439,13 @@ def _detect_checkpoint() -> int:
 # ── helpers: shared bootstrap setup ────────────────────────────────────────
 
 def _run_workflow(args, start_from_iteration: int):
-    """Shared workflow execution — called by both bootstrap and resume."""
+    """Shared workflow execution — uses workspace root detection."""
     import shutil
+
+    ws_root = _find_workspace_root()
+    if not ws_root:
+        print("ERROR: No workspace found. Run: agentcraft init")
+        sys.exit(1)
 
     ws = _load_ws()
     _require_yaml(bootstrap_parser)
@@ -386,8 +456,8 @@ def _run_workflow(args, start_from_iteration: int):
 
     model     = args.model     or team.get("model", "qwen2.5-coder:7b")
     framework = args.framework or team.get("framework")
-    docs_dir  = ROOT / paths.get("docs", "docs")
-    workspace = ROOT / paths.get("output", ".")
+    docs_dir  = ws_root / paths.get("docs", "docs")
+    workspace = ws_root / paths.get("output", ".")
 
     if args.rag:   rag_cfg["enabled"] = True
     if args.no_rag: rag_cfg["enabled"] = False
@@ -417,7 +487,7 @@ def _run_workflow(args, start_from_iteration: int):
             comms_process = subprocess.Popen([
                 sys.executable, "-m", "uvicorn", "comms.main:app",
                 f"--port={comms_port}", "--log-level=warning"
-            ], cwd=str(ROOT))
+            ], cwd=str(ws_root))
             time.sleep(3)
             print(f"  Comms server ready at http://localhost:{comms_port}")
 
@@ -451,14 +521,14 @@ def _run_workflow(args, start_from_iteration: int):
         datefmt="%H:%M:%S",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(".ai/bootstrap.log", mode="a") if (ROOT / ".ai").exists()
+            logging.FileHandler(str(ws_root / ".ai" / "bootstrap.log"), mode="a") if (ws_root / ".ai").exists()
             else logging.NullHandler(),
         ],
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     os.environ["COMMS_SERVER_URL"] = f"http://localhost:{comms_port}"
-    (ROOT / ".ai").mkdir(exist_ok=True)
+    (ws_root / ".ai").mkdir(exist_ok=True)
 
     # ── Orchestrator ─────────────────────────────────────────────────────
     from core.orchestrator import Orchestrator
@@ -466,7 +536,7 @@ def _run_workflow(args, start_from_iteration: int):
     legacy_dirs = []
     if ws.get("project", {}).get("type") == "legacy":
         for d in rag_cfg.get("legacy_source_dirs", []):
-            p = ROOT / d
+            p = ws_root / d
             if p.exists():
                 legacy_dirs.append(p)
 
@@ -568,7 +638,7 @@ def cmd_comms(args):
         print("Installing uvicorn...")
         subprocess.run([sys.executable, "-m", "pip", "install", "uvicorn", "fastapi"], check=True)
 
-    comms_dir = ROOT / "comms"
+    comms_dir = AGENTCRAFT_HOME / "comms"
     port = args.port or 7000
     
     # Check if already running
@@ -590,7 +660,7 @@ def cmd_comms(args):
     subprocess.run(
         ["uvicorn", "comms.main:app", f"--port={port}",
          "--reload" if args.dev else "--workers=1"],
-        cwd=str(ROOT),
+        cwd=str(AGENTCRAFT_HOME),
     )
 
 
@@ -658,6 +728,11 @@ def cmd_chat(args):
     import logging
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+    ws_root = _find_workspace_root()
+    if not ws_root:
+        print("ERROR: No workspace found. Run: agentcraft init")
+        sys.exit(1)
+
     ws = _load_ws()
     _require_yaml(chat_parser)
 
@@ -667,8 +742,8 @@ def cmd_chat(args):
 
     model     = args.model     or team.get("model", "qwen2.5-coder:7b")
     framework = args.framework or team.get("framework")
-    docs_dir  = ROOT / paths.get("docs", "docs")
-    workspace = ROOT / paths.get("output", ".")
+    docs_dir  = ws_root / paths.get("docs", "docs")
+    workspace = ws_root / paths.get("output", ".")
 
     if args.rag:   rag_cfg["enabled"] = True
     if args.no_rag: rag_cfg["enabled"] = False
@@ -792,9 +867,14 @@ def cmd_validate(args):
 # ── new-agent ─────────────────────────────────────────────────────────────────
 
 def cmd_new_agent(args):
-    """Scaffold a new agent folder."""
+    """Scaffold a new agent folder in the workspace."""
+    ws_root = _find_workspace_root()
+    if not ws_root:
+        print("ERROR: No workspace found. Run: agentcraft init")
+        sys.exit(1)
+
     name      = args.name
-    agent_dir = ROOT / "agents" / name
+    agent_dir = ws_root / "agents" / name
 
     if agent_dir.exists():
         print(f"Agent '{name}' already exists at agents/{name}/")
@@ -887,7 +967,11 @@ You are a specialised AI agent in an autonomous development team.
 
 def cmd_build_state(args):
     """Show current build state from event store."""
-    events_path = ROOT / ".ai" / "events.jsonl"
+    ws_root = _find_workspace_root()
+    if not ws_root:
+        print("  No workspace found — no build history")
+        return
+    events_path = ws_root / ".ai" / "events.jsonl"
     if not events_path.exists():
         print("  No event store found — no build history")
         return
@@ -937,7 +1021,11 @@ def cmd_build_state(args):
 
 def cmd_reset_events(args):
     """Clear the event store — starts fresh."""
-    events_path = ROOT / ".ai" / "events.jsonl"
+    ws_root = _find_workspace_root()
+    if not ws_root:
+        print("  No workspace found")
+        return
+    events_path = ws_root / ".ai" / "events.jsonl"
     if not events_path.exists():
         print("  No event store to clear")
         return

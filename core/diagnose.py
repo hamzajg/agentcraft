@@ -31,6 +31,15 @@ except ImportError:
 REPO_ROOT  = Path(__file__).parent.parent
 AI_TEAM    = Path(__file__).parent
 
+
+def _find_workspace_root() -> Path:
+    """Walk up from CWD looking for workspace.yaml."""
+    cur = Path.cwd()
+    for d in [cur] + list(cur.parents):
+        if (d / "workspace.yaml").exists():
+            return d
+    return REPO_ROOT  # fallback
+
 # ── Hardware tiers ────────────────────────────────────────────────────────────
 # Each tier defines:
 #   coding_model    — primary model for backend_dev, test_dev, config_agent
@@ -314,9 +323,10 @@ def main():
     parser.add_argument("--force-tier", choices=list(TIERS),
                         help="Override auto-detected tier")
     parser.add_argument("--output",     type=Path,
-                        default=Path(__file__).parent.parent / "model-profile.yaml",
-                        help="Where to write the profile YAML")
+                        help="Where to write the profile YAML (default: workspace/model-profile.yaml)")
     args = parser.parse_args()
+
+    ws_root = _find_workspace_root()
 
     print("Detecting hardware...")
     hw = detect_hardware()
@@ -333,8 +343,10 @@ def main():
         print("Dry run — no files written.")
         return
 
-    write_profile(hw, tier_cfg, args.output)
-    patch_workspace(tier_cfg, REPO_ROOT / "workspace.yaml")
+    # Default output: workspace root / model-profile.yaml
+    output_path = args.output or ws_root / "model-profile.yaml"
+    write_profile(hw, tier_cfg, output_path)
+    patch_workspace(tier_cfg, ws_root / "workspace.yaml")
 
     if args.pull:
         if not shutil.which("ollama"):
