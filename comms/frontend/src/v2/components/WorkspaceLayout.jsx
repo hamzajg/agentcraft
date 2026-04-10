@@ -346,6 +346,34 @@ export function WorkspaceLayout() {
     }
   }
 
+  // Load full message history for a specific agent
+  const loadAgentMessages = useCallback(async (agentId) => {
+    try {
+      const msgs = await api.messages(agentId, 100)
+      if (msgs && msgs.length > 0) {
+        setMessages(prev => {
+          const existing = prev[agentId] ?? []
+          const merged = [...existing]
+          for (const m of msgs) {
+            const idx = merged.findIndex(x => x.id === m.id)
+            if (idx < 0) {
+              merged.push(m)
+            } else {
+              // Update if status changed (e.g., pending -> replied)
+              if (m.status !== merged[idx].status) {
+                merged[idx] = m
+              }
+            }
+          }
+          merged.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+          return { ...prev, [agentId]: merged }
+        })
+      }
+    } catch (e) {
+      console.error('Failed to load messages for', agentId, e)
+    }
+  }, [])
+
   const handleFileSelect = (file) => {
     setSelectedFile(file)
     setShowFileViewer(true)
