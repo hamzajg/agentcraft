@@ -52,15 +52,23 @@ Let the LLM determine the appropriate architecture based on the request. The des
 
 ## Iteration Planning
 
+When planning iterations, you MUST create a concrete implementation plan based on the requirements.
+
+**CRITICAL: Even the simplest project needs at least 1-2 iterations to deliver working code.**
+
 Create iterations that deliver:
-- Working code early
-- Only what's needed
-- Incrementally
+- Working code early (always start with project setup and core structure)
+- Only what's needed based on requirements
+- Incrementally, building on previous iterations
+
+**You MUST NOT return an empty plan.** At minimum, create iterations for:
+1. Project setup (initialization, dependencies, basic structure)
+2. Core functionality (main features based on requirements)
 
 Do NOT create iterations for:
-- Features not requested
-- "Good practices" not required
-- Infrastructure not asked for
+- Features not mentioned in requirements
+- "Good practices" infrastructure not asked for
+- Deployment/CI-CD infrastructure not requested
 
 ## Common Over-Engineering Traps to Avoid
 

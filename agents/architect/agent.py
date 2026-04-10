@@ -385,7 +385,38 @@ Now, analyze the requirements above and create an appropriate implementation pla
 Output ONLY the JSON array, nothing else."""
 
         result = self._run_step(prompt, label="plan iterations", timeout=300)
-        return self._parse_iterations(result.get("output", "[]"))
+        iterations = self._parse_iterations(result.get("output", "[]"))
+        
+        # Fallback: if LLM returned empty, create a minimal plan
+        if not iterations:
+            logger.warning("[architect] LLM returned empty iteration plan — creating minimal fallback plan")
+            iterations = self._minimal_fallback_plan(architecture)
+        
+        return iterations
+
+    def _minimal_fallback_plan(self, architecture: str = None) -> list[dict]:
+        """Create a minimal 2-iteration plan when LLM returns empty."""
+        arch = architecture or "monolith"
+        return [
+            {
+                "id": 1,
+                "phase": 1,
+                "name": "project setup and structure",
+                "goal": "Initialize project with basic structure and dependencies",
+                "files_expected": ["main.py", "requirements.txt", "README.md"],
+                "depends_on": [],
+                "acceptance_criteria": ["project structure created", "dependencies installable", "main entry point runs"]
+            },
+            {
+                "id": 2,
+                "phase": 1,
+                "name": "core functionality implementation",
+                "goal": "Implement core features based on requirements",
+                "files_expected": ["core.py", "utils.py"],
+                "depends_on": [1],
+                "acceptance_criteria": ["core features functional", "basic error handling in place"]
+            }
+        ]
 
     def _parse_iterations(self, output: str) -> list[dict]:
         """Parse iteration JSON from LLM output with robust error handling."""
