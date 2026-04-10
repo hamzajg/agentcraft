@@ -21,11 +21,11 @@ Also validates:
   - agents/prompts/ contains a prompt for every agent_configs/ entry
 """
 
-import sys
 import argparse
 import subprocess
-from pathlib import Path
+import sys
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -34,16 +34,26 @@ except ImportError:
     print("ERROR: pyyaml not installed. Run: pip install pyyaml")
     sys.exit(1)
 
-REPO_ROOT   = Path(__file__).parent.parent.parent
-WORKSPACE   = REPO_ROOT / "workspace.yaml"
+REPO_ROOT = Path(__file__).parent.parent.parent
+WORKSPACE = REPO_ROOT / "workspace.yaml"
+
+
+def _find_workspace_root() -> Path:
+    """Walk up from CWD looking for workspace.yaml."""
+    cur = Path.cwd()
+    for d in [cur] + list(cur.parents):
+        if (d / "workspace.yaml").exists():
+            return d
+    return REPO_ROOT  # fallback to installation dir
 
 
 # ── Violation collector ────────────────────────────────────────────────────────
 
+
 class Report:
     def __init__(self):
         self.violations: list[str] = []
-        self.warnings:   list[str] = []
+        self.warnings: list[str] = []
 
     def error(self, msg: str):
         self.violations.append(f"  ERROR  {msg}")
@@ -71,6 +81,7 @@ class Report:
 
 # ── Main checks ────────────────────────────────────────────────────────────────
 
+
 def load_workspace(report: Report) -> Optional[dict]:
     if not WORKSPACE.exists():
         report.error(f"workspace.yaml not found at {WORKSPACE}")
@@ -87,13 +98,15 @@ def load_workspace(report: Report) -> Optional[dict]:
     return ws
 
 
-def check_human_paths_clean(ws: dict, report: Report, staged_files: Optional[list] = None):
+def check_human_paths_clean(
+    ws: dict, report: Report, staged_files: Optional[list] = None
+):
     """
     Ensure no agent-generated file patterns exist under human-authored paths.
     """
-    enforcement  = ws.get("enforcement", {})
-    forbidden    = enforcement.get("forbidden_in_human_paths", [])
-    human_paths  = [REPO_ROOT / p for p in enforcement.get("human_paths", [])]
+    enforcement = ws.get("enforcement", {})
+    forbidden = enforcement.get("forbidden_in_human_paths", [])
+    human_paths = [REPO_ROOT / p for p in enforcement.get("human_paths", [])]
 
     files_to_check = []
     if staged_files is not None:
@@ -105,17 +118,16 @@ def check_human_paths_clean(ws: dict, report: Report, staged_files: Optional[lis
 
     for f in files_to_check:
         # Only check files under human_paths
-        is_human = any(
-            str(f).startswith(str(hp)) for hp in human_paths
-        )
+        is_human = any(str(f).startswith(str(hp)) for hp in human_paths)
         if not is_human:
             continue
         rel = f.relative_to(REPO_ROOT)
 
         # Check if this is in a 3rd party directory (should be warning, not error)
-        is_third_party = any(part in str(rel).split('/') for part in [
-            'node_modules', 'vendor', 'third_party', 'deps', '.git'
-        ])
+        is_third_party = any(
+            part in str(rel).split("/")
+            for part in ["node_modules", "vendor", "third_party", "deps", ".git"]
+        )
 
         for pattern in forbidden:
             if fnmatch(str(rel), pattern) or fnmatch(f.name, pattern.lstrip("**/")):
@@ -144,7 +156,9 @@ def check_output_not_committed(report: Report):
     try:
         result = subprocess.run(
             ["git", "ls-files"] + agent_dirs,
-            cwd=str(REPO_ROOT), capture_output=True, text=True
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
         )
         tracked = [line for line in result.stdout.splitlines() if line.strip()]
         if tracked:
@@ -152,7 +166,7 @@ def check_output_not_committed(report: Report):
                 f"Agent dirs have {len(tracked)} git-tracked file(s). "
                 f"These should only be committed after human review.\n"
                 f"         Files: {', '.join(tracked[:3])}"
-                + (f" (and {len(tracked)-3} more)" if len(tracked) > 3 else "")
+                + (f" (and {len(tracked) - 3} more)" if len(tracked) > 3 else "")
             )
     except FileNotFoundError:
         pass  # git not available
@@ -198,8 +212,7 @@ def check_workspace_yaml_present(report: Report):
 def get_staged_files() -> list[str]:
     try:
         result = subprocess.run(
-            ["git", "diff", "--cached", "--name-only"],
-            capture_output=True, text=True
+            ["git", "diff", "--cached", "--name-only"], capture_output=True, text=True
         )
         return result.stdout.splitlines()
     except FileNotFoundError:
@@ -208,12 +221,24 @@ def get_staged_files() -> list[str]:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Validate agent/human ownership boundary")
-    parser.add_argument("--staged", action="store_true",
-                        help="Check staged files only (pre-commit mode)")
+    parser = argparse.ArgumentParser(
+        description="Validate agent/human ownership boundary"
+    )
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="Check staged files only (pre-commit mode)",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
+
+    # Detect workspace root
+    ws_root = _find_workspace_root()
+    global REPO_ROOT, WORKSPACE
+    REPO_ROOT = ws_root
+    WORKSPACE = ws_root / "workspace.yaml"
 
     report = Report()
     staged = get_staged_files() if args.staged else None
