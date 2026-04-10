@@ -80,7 +80,8 @@ class SpecAgent(AiderAgent):
 
         Returns:
             Tuple of (spec_file, use_cases_file) paths.
-            May return (None, None) if generation completely fails.
+            Always returns Path objects (possibly empty files on failure).
+            The orchestrator creates stubs if content is missing.
         """
         self.report_status("running")
         try:
@@ -90,7 +91,8 @@ class SpecAgent(AiderAgent):
                 result = self._specify_default(docs_dir)
         except Exception:
             logger.exception("[spec] unhandled error in specify phase")
-            result = (None, None)
+            ai_dir = self._ai_dir() if self.workspace else Path(".ai")
+            result = (_ensure_file(ai_dir / "spec.md"), _ensure_file(ai_dir / "use_cases.md"))
         self.report_status("idle")
         return result
 
@@ -120,17 +122,17 @@ class SpecAgent(AiderAgent):
         entities_file = self._extract_entities(doc_files, ai_dir)
         if entities_file is None:
             logger.error("[spec] entity extraction failed — cannot continue")
-            return None, None
+            return spec_file, use_cases_file  # return empty paths, orchestrator creates stubs
 
         # Step 2: Write spec.md (bounded by entity list)
         context = doc_files + [entities_file]
         if not self._write_spec_file(spec_file, context):
-            return None, None
+            return spec_file, use_cases_file  # return empty paths, orchestrator creates stubs
 
         # Step 3: Write use_cases.md (top 3 use cases)
         context2 = doc_files + [entities_file, spec_file]
         if not self._write_use_cases_file(use_cases_file, context2):
-            return None, None
+            return spec_file, use_cases_file  # return partial, orchestrator handles
 
         logger.info("[spec] default flow complete — spec.md + use_cases.md")
         return spec_file, use_cases_file
@@ -169,12 +171,12 @@ class SpecAgent(AiderAgent):
 
         # Step 1: Write proposal (why + what)
         if not self._write_openspec_proposal(proposal_file, doc_files, project_name):
-            return None, None
+            return proposal_file, delta_spec_file  # return empty paths, orchestrator creates stubs
 
         # Step 2: Write delta spec (requirements with scenarios)
         ctx = doc_files + [proposal_file]
         if not self._write_openspec_delta_spec(delta_spec_file, ctx, domain):
-            return None, None
+            return proposal_file, delta_spec_file  # return empty paths, orchestrator creates stubs
 
         # Copy delta spec to source-of-truth location
         sot_spec = specs_dir / "spec.md"
