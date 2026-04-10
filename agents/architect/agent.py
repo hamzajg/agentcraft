@@ -315,59 +315,116 @@ Respond with a detailed architecture description in JSON format:
         arch_context = architecture or self._determine_architecture_style()
         existing_docs = self._read_existing_docs()
 
+        # Build a clear requirements summary
+        req_summary = requirements if len(requirements) < 3000 else requirements[:3000] + "\n\n[... truncated ...]"
+
         prompt = f"""Based on the following requirements, plan concrete implementation iterations.
 
-## Requirements
-{requirements}
+## Requirements Summary
+{req_summary}
 
 ## Architecture Style
 {arch_context}
 
 ## Existing Documentation
-{json.dumps(existing_docs, indent=2)}
+{json.dumps(existing_docs, indent=2) if existing_docs else "No existing documentation found."}
 
-## Task
-Create a phased implementation plan. Each phase should:
-- Be independent and testable
-- Deliver value incrementally
-- Build on previous phases
+## Your Task
+Create a phased implementation plan with small, testable iterations.
 
-The number of iterations and phases should be proportional to the project complexity:
-- Simple projects (scripts, tools): 1-2 phases, 2-4 iterations
-- Medium projects (apps, services): 2-3 phases, 4-8 iterations
-- Complex projects (enterprise, distributed): 3+ phases, 8+ iterations
+### Rules (MUST FOLLOW):
+1. Each iteration MUST produce working code that can be tested
+2. Start with the absolute minimum: project setup, core data models, main functionality
+3. Each iteration should modify 1-4 files maximum
+4. Keep iterations small and focused
+5. Build incrementally - later iterations depend on earlier ones
+6. For simple projects: 1-2 phases, 2-4 iterations
+7. For medium projects: 2-3 phases, 4-8 iterations
+8. For complex projects: 3+ phases, 8+ iterations
 
-Output ONLY a valid JSON array of iterations:
-```json
+### Output Format (STRICT):
+You MUST output ONLY a valid JSON array. NO markdown, NO code blocks, NO explanations.
+The response must be parseable as JSON starting with '[' and ending with ']'.
+
+### JSON Schema:
 [
   {{
     "id": 1,
     "phase": 1,
-    "name": "short descriptive name",
-    "goal": "one sentence goal",
-    "files_expected": ["path/to/file"],
+    "name": "short descriptive name (3-6 words)",
+    "goal": "one sentence describing what this iteration achieves",
+    "files_expected": ["relative/path/to/file.py"],
     "depends_on": [],
-    "acceptance_criteria": ["compiles", "tests pass"]
+    "acceptance_criteria": ["criterion 1", "criterion 2"]
   }}
 ]
-```
 
-Keep each iteration small and focused (1-4 files).
-"""
+### Example Output:
+[
+  {{
+    "id": 1,
+    "phase": 1,
+    "name": "project setup and core model",
+    "goal": "Initialize project structure and define core data models",
+    "files_expected": ["src/main.py", "src/models.py", "requirements.txt"],
+    "depends_on": [],
+    "acceptance_criteria": ["project runs without errors", "core models defined"]
+  }},
+  {{
+    "id": 2,
+    "phase": 1,
+    "name": "basic functionality implementation",
+    "goal": "Implement the core functionality based on requirements",
+    "files_expected": ["src/handlers.py", "src/utils.py"],
+    "depends_on": [1],
+    "acceptance_criteria": ["main features work", "basic error handling"]
+  }}
+]
+
+Now, analyze the requirements above and create an appropriate implementation plan.
+Output ONLY the JSON array, nothing else."""
 
         result = self._run_step(prompt, label="plan iterations", timeout=300)
         return self._parse_iterations(result.get("output", "[]"))
 
     def _parse_iterations(self, output: str) -> list[dict]:
+        """Parse iteration JSON from LLM output with robust error handling."""
+        if not output or not output.strip():
+            logger.warning("[architect] _parse_iterations: empty output received")
+            return []
+
+        output_stripped = output.strip()
+        logger.info("[architect] _parse_iterations: output length=%d, first 100 chars=%s", 
+                    len(output), output_stripped[:100])
+
+        # Try to extract JSON from markdown code blocks first
         json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
         if json_match:
             try:
-                return json.loads(json_match.group(1))
-            except json.JSONDecodeError:
-                pass
+                iterations = json.loads(json_match.group(1))
+                logger.info("[architect] _parse_iterations: successfully parsed from markdown code block, %d iterations", len(iterations))
+                return iterations
+            except json.JSONDecodeError as e:
+                logger.warning("[architect] _parse_iterations: failed to parse markdown code block JSON: %s", e)
+
+        # Try to find any JSON array in the output
+        array_match = re.search(r'\[[\s\S]*\]', output_stripped)
+        if array_match:
+            try:
+                iterations = json.loads(array_match.group(0))
+                logger.info("[architect] _parse_iterations: successfully parsed JSON array, %d iterations", len(iterations))
+                return iterations
+            except json.JSONDecodeError as e:
+                logger.warning("[architect] _parse_iterations: failed to parse JSON array: %s", e)
+
+        # Try parsing the entire output as JSON
         try:
-            return json.loads(output)
-        except json.JSONDecodeError:
+            iterations = json.loads(output_stripped)
+            logger.info("[architect] _parse_iterations: successfully parsed entire output as JSON, %d iterations", len(iterations))
+            return iterations
+        except json.JSONDecodeError as e:
+            logger.error("[architect] _parse_iterations: all parsing attempts failed. Error: %s. Output was: %s", 
+                        e, output_stripped[:500])
             return []
 
     def create_architecture_doc(self, design: dict, output_path: Path) -> None:
