@@ -4,11 +4,11 @@ spec/agent.py — Spec agent.
 Responsible for the specification phase only.
 Reads input docs, extracts entities, writes spec.md and use_cases.md.
 
-Follows the same structure as docs_agent:
-  - Public entry point: specify(docs_dir) -> (spec_file, use_cases_file)
-  - Internal steps with clear context chaining
-  - Resume support (skip non-empty files)
-  - Proper file validation after each aider run
+Design principles:
+  - Small incremental steps — each step is one focused aider call
+  - NO automatic retries — failures are reported, user decides
+  - Clear step reporting with progress (N/M)
+  - User-controlled retry via clarification system
 """
 
 import logging
@@ -24,12 +24,9 @@ SYSTEM_PROMPT = (
     else "You are the Spec Agent. Create precise, unambiguous specification documents from requirements."
 )
 
-# Number of times to retry a step before giving up
-MAX_STEP_RETRIES = 3
-
 
 def _ensure_file(path: Path) -> Path:
-    """Ensure file exists with parent directories (like docs_agent and other agents do)."""
+    """Ensure file exists with parent directories, matching docs_agent pattern."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.touch()
@@ -71,6 +68,7 @@ class SpecAgent(AiderAgent):
             **kwargs,
         )
         self._is_openspec = framework_id == "openspec"
+        self._step_results = []  # Track per-step results
 
     # ── Public entry point (called by orchestrator) ───────────────────────
 
@@ -84,9 +82,9 @@ class SpecAgent(AiderAgent):
         Returns:
             Tuple of (spec_file, use_cases_file) paths.
             Always returns Path objects (possibly empty files on failure).
-            The orchestrator creates stubs if content is missing.
         """
         self.report_status("running")
+        self._step_results = []
         try:
             if self._is_openspec:
                 result = self._specify_openspec(docs_dir)
@@ -98,6 +96,56 @@ class SpecAgent(AiderAgent):
             result = (_ensure_file(ai_dir / "spec.md"), _ensure_file(ai_dir / "use_cases.md"))
         self.report_status("idle")
         return result
+
+    def get_step_results(self) -> list[dict]:
+        """Return per-step results for reporting to user/orchestrator."""
+        return list(self._step_results)
+
+    # ── Step runner: single-shot, no auto-retry ──────────────────────────
+
+    def _run_step(self, message: str, read_files: list[Path],
+                  output_path: Path, label: str,
+                  timeout: int = 180) -> dict:
+        """Run a single aider step. NO automatic retry. Returns result dict."""
+        logger.info("[spec] step: %s", label)
+
+        result = self.run(
+            message=message,
+            read_files=read_files,
+            edit_files=[output_path],
+            timeout=timeout,
+            log_callback=self.log_callback,
+        )
+
+        success = result.get("success", False) and _file_has_content(output_path)
+        step_info = {
+            "label": label,
+            "success": success,
+            "file": str(output_path),
+            "exit_code": result.get("exit_code", -1),
+        }
+        self._step_results.append(step_info)
+
+        if not success:
+            logger.warning("[spec] step FAILED: %s (exit=%s)",
+                           label, result.get("exit_code", "?"))
+        else:
+            logger.info("[spec] step OK: %s", label)
+
+        return result
+
+    def _ask_user_retry(self, step_label: str, error_detail: str) -> str:
+        """Ask user what to do after a step failure."""
+        reply = self.ask(
+            question=f"Step '{step_label}' failed: {error_detail}. What should I do?",
+            suggestions=[
+                "Retry this step",
+                "Skip this step and continue",
+                "Abort the specification phase",
+            ],
+            timeout=300,
+        )
+        return (reply or "").lower().strip()
 
     # ── Default (non-OpenSpec) flow ──────────────────────────────────────
 
@@ -121,24 +169,31 @@ class SpecAgent(AiderAgent):
         spec_file.write_text("")
         use_cases_file.write_text("")
 
-        # Step 1: Extract entities (fast, focused scaffolding)
-        entities_file = self._extract_entities(doc_files, ai_dir)
+        # Step 1: Extract entities
+        entities_file = self._step_extract_entities(doc_files, ai_dir)
         if entities_file is None:
-            logger.error("[spec] entity extraction failed — cannot continue")
-            return spec_file, use_cases_file  # return empty paths, orchestrator creates stubs
+            # User chose to skip or abort
+            return self._return_partial_or_empty(spec_file, use_cases_file)
 
-        # Step 2: Write spec.md (bounded by entity list)
+        # Step 2: Write spec.md
         context = doc_files + [entities_file]
-        if not self._write_spec_file(spec_file, context):
-            return spec_file, use_cases_file  # return empty paths, orchestrator creates stubs
+        if not self._step_write_spec_file(spec_file, context):
+            return self._return_partial_or_empty(spec_file, use_cases_file)
 
-        # Step 3: Write use_cases.md (top 3 use cases)
+        # Step 3: Write use_cases.md
         context2 = doc_files + [entities_file, spec_file]
-        if not self._write_use_cases_file(use_cases_file, context2):
-            return spec_file, use_cases_file  # return partial, orchestrator handles
+        if not self._step_write_use_cases_file(use_cases_file, context2):
+            return self._return_partial_or_empty(spec_file, use_cases_file)
 
         logger.info("[spec] default flow complete — spec.md + use_cases.md")
         return spec_file, use_cases_file
+
+    def _return_partial_or_empty(self, spec_file: Path, uc_file: Path) -> tuple[Path, Path]:
+        """Return whatever was generated so far. Orchestrator creates stubs if needed."""
+        self.emit_file_written(spec_file)
+        if _file_has_content(uc_file):
+            self.emit_file_written(uc_file)
+        return spec_file, uc_file
 
     # ── OpenSpec flow ────────────────────────────────────────────────────
 
@@ -172,21 +227,21 @@ class SpecAgent(AiderAgent):
         proposal_file.write_text("")
         delta_spec_file.write_text("")
 
-        # Step 1: Write proposal (why + what)
-        if not self._write_openspec_proposal(proposal_file, doc_files, project_name):
-            return proposal_file, delta_spec_file  # return empty paths, orchestrator creates stubs
+        # Step 1: Write proposal
+        if not self._step_write_proposal(proposal_file, doc_files, project_name):
+            return proposal_file, delta_spec_file
 
-        # Step 2: Write delta spec (requirements with scenarios)
+        # Step 2: Write delta spec
         ctx = doc_files + [proposal_file]
-        if not self._write_openspec_delta_spec(delta_spec_file, ctx, domain):
-            return proposal_file, delta_spec_file  # return empty paths, orchestrator creates stubs
+        if not self._step_write_delta_spec(delta_spec_file, ctx, domain):
+            return proposal_file, delta_spec_file
 
-        # Copy delta spec to source-of-truth location
+        # Copy delta spec to source-of-truth
         sot_spec = specs_dir / "spec.md"
         sot_spec.write_text(delta_spec_file.read_text())
         self.emit_file_written(sot_spec)
 
-        # Write stubs for downstream agents (architect, planner)
+        # Write stubs for downstream agents
         self._write_stub_if_empty(design_file, self._design_stub(change_name))
         self._write_stub_if_empty(tasks_file, self._tasks_stub(change_name))
 
@@ -202,60 +257,14 @@ class SpecAgent(AiderAgent):
         logger.info("[spec] openspec flow complete")
         return proposal_file, delta_spec_file
 
-    # ── Internal step methods (default flow) ─────────────────────────────
+    # ── Individual step methods (default flow) ───────────────────────────
 
-    def _run_step_with_retry(self, message: str, read_files: list[Path],
-                               output_path: Path, label: str,
-                               timeout: int = 180) -> bool:
-        """Run aider with retry logic: up to MAX_STEP_RETRIES attempts with escalating prompts."""
-        last_error = ""
-
-        for attempt in range(1, MAX_STEP_RETRIES + 1):
-            # On retry, escalate the prompt to be more explicit
-            if attempt > 1:
-                logger.warning("[spec] %s — retry %d/%d (prev: %s)",
-                               label, attempt, MAX_STEP_RETRIES, last_error)
-                # Clear the file for a fresh attempt
-                output_path.write_text("")
-                # Escalate prompt for retry
-                retry_message = (
-                    f"IMPORTANT: You must write content to the file '{output_path.name}'.\n\n"
-                    f"Previous attempt did not produce valid content. This is attempt {attempt}/{MAX_STEP_RETRIES}.\n\n"
-                    f"{message}\n\n"
-                    f"CRITICAL: You MUST create actual content — do NOT write placeholder comments, "
-                    f"empty sections, or stubs. Write real, substantive specification content now."
-                )
-            else:
-                retry_message = message
-
-            result = self.run(
-                message=retry_message,
-                read_files=read_files,
-                edit_files=[output_path],
-                timeout=timeout,
-                log_callback=self.log_callback,
-            )
-
-            if self._check_result(result, output_path, f"{label} (attempt {attempt})"):
-                return True
-
-            # Capture what went wrong for the next retry
-            if not result.get("success"):
-                last_error = f"aider exit code={result.get('exit_code', -1)}"
-            else:
-                last_error = "file was empty after aider succeeded"
-
-        logger.error("[spec] %s — all %d retries exhausted", label, MAX_STEP_RETRIES)
-        return False
-
-    def _extract_entities(self, doc_files: list[Path], ai_dir: Path) -> Path | None:
-        """Step 1: Extract key entities from docs — fast, focused."""
+    def _step_extract_entities(self, doc_files: list[Path], ai_dir: Path) -> Path | None:
+        """Step 1: Extract key entities from docs."""
         entities_file = _ensure_file(ai_dir / "entities.md")
-        entities_file.write_text("")  # clear stale
+        entities_file.write_text("")
 
-        logger.info("[spec] step 1/3 — extract entities (%d docs)", len(doc_files))
-
-        ok = self._run_step_with_retry(
+        result = self._run_step(
             message=(
                 "Read the provided documents. List the main entities (nouns) this system works with.\n"
                 "Format: one entity per line, with a 1-sentence description.\n"
@@ -264,17 +273,38 @@ class SpecAgent(AiderAgent):
             ),
             read_files=doc_files,
             output_path=entities_file,
-            label="entities.md",
+            label="1/3 — extract entities",
             timeout=180,
         )
 
-        return entities_file if ok else None
+        if not result.get("success"):
+            decision = self._ask_user_retry("extract entities", "aider could not extract entities")
+            if "abort" in decision:
+                return None
+            if "skip" in decision:
+                # Create minimal entities file so we can continue
+                entities_file.write_text("# Entities\n_No entities extracted automatically._\n")
+                return entities_file
+            # "retry" — fall through to single retry
+            result = self._run_step(
+                message=(
+                    "CRITICAL: Read the documents and list the main entities.\n"
+                    "One per line with a short description. Max 10. Write to the file."
+                ),
+                read_files=doc_files,
+                output_path=entities_file,
+                label="1/3 — extract entities (retry)",
+                timeout=180,
+            )
+            if not result.get("success"):
+                entities_file.write_text("# Entities\n_Retry also failed._\n")
+                return entities_file
 
-    def _write_spec_file(self, output_path: Path, context: list[Path]) -> bool:
+        return entities_file
+
+    def _step_write_spec_file(self, output_path: Path, context: list[Path]) -> bool:
         """Step 2: Write spec.md using entities as scaffold."""
-        logger.info("[spec] step 2/3 — write spec.md")
-
-        return self._run_step_with_retry(
+        result = self._run_step(
             message=(
                 "Write the project specification.\n\n"
                 "Include these sections (adapt to the project type):\n"
@@ -290,15 +320,35 @@ class SpecAgent(AiderAgent):
             ),
             read_files=context,
             output_path=output_path,
-            label="spec.md",
+            label="2/3 — write spec.md",
             timeout=1200,
         )
 
-    def _write_use_cases_file(self, output_path: Path, context: list[Path]) -> bool:
-        """Step 3: Write 3 most important use cases."""
-        logger.info("[spec] step 3/3 — write use cases")
+        if not result.get("success"):
+            decision = self._ask_user_retry("write spec.md", "aider could not write spec.md")
+            if "abort" in decision:
+                return False
+            if "skip" in decision:
+                output_path.write_text("# Specification\n_Auto-generation skipped._\n")
+                return True
+            # retry
+            result = self._run_step(
+                message=(
+                    "CRITICAL: Write the project specification with all required sections.\n"
+                    "You MUST create actual content — no placeholders or stubs."
+                ),
+                read_files=context,
+                output_path=output_path,
+                label="2/3 — write spec.md (retry)",
+                timeout=1200,
+            )
+            return result.get("success", False) or _file_has_content(output_path)
 
-        return self._run_step_with_retry(
+        return True
+
+    def _step_write_use_cases_file(self, output_path: Path, context: list[Path]) -> bool:
+        """Step 3: Write 3 most important use cases."""
+        result = self._run_step(
             message=(
                 "Write use_cases.md with the 3 most important use cases.\n\n"
                 "Each use case format:\n"
@@ -311,19 +361,38 @@ class SpecAgent(AiderAgent):
             ),
             read_files=context,
             output_path=output_path,
-            label="use_cases.md",
+            label="3/3 — write use_cases.md",
             timeout=1200,
         )
 
-    # ── Internal step methods (OpenSpec flow) ────────────────────────────
+        if not result.get("success"):
+            decision = self._ask_user_retry("write use_cases.md", "aider could not write use cases")
+            if "abort" in decision:
+                return False
+            if "skip" in decision:
+                output_path.write_text("# Use Cases\n_Auto-generation skipped._\n")
+                return True
+            # retry
+            result = self._run_step(
+                message=(
+                    "CRITICAL: Write 3 use cases in the specified format.\n"
+                    "You MUST create actual content — no placeholders."
+                ),
+                read_files=context,
+                output_path=output_path,
+                label="3/3 — write use_cases.md (retry)",
+                timeout=1200,
+            )
+            return result.get("success", False) or _file_has_content(output_path)
 
-    def _write_openspec_proposal(
-        self, output_path: Path, doc_files: list[Path], project_name: str
-    ) -> bool:
-        """Step 1: Write OpenSpec proposal (why + what)."""
-        logger.info("[spec] openspec step 1/3 — proposal")
+        return True
 
-        return self._run_step_with_retry(
+    # ── Individual step methods (OpenSpec flow) ──────────────────────────
+
+    def _step_write_proposal(self, output_path: Path, doc_files: list[Path],
+                             project_name: str) -> bool:
+        """Step 1: Write OpenSpec proposal."""
+        result = self._run_step(
             message=(
                 f"Write an OpenSpec proposal for project '{project_name}'.\n\n"
                 "Sections:\n"
@@ -334,17 +403,36 @@ class SpecAgent(AiderAgent):
             ),
             read_files=doc_files,
             output_path=output_path,
-            label="proposal.md",
+            label="1/2 — write proposal",
             timeout=180,
         )
 
-    def _write_openspec_delta_spec(
-        self, output_path: Path, context: list[Path], domain: str
-    ) -> bool:
-        """Step 2: Write OpenSpec delta spec (requirements + scenarios)."""
-        logger.info("[spec] openspec step 2/3 — delta spec")
+        if not result.get("success"):
+            decision = self._ask_user_retry("write proposal", "aider could not write proposal")
+            if "abort" in decision:
+                return False
+            if "skip" in decision:
+                output_path.write_text(f"# Proposal: {project_name}\n_Auto-generation skipped._\n")
+                return True
+            # retry
+            result = self._run_step(
+                message=(
+                    f"CRITICAL: Write an OpenSpec proposal for '{project_name}'. "
+                    "Include Why, What Changes, Out of Scope. Under 200 words."
+                ),
+                read_files=doc_files,
+                output_path=output_path,
+                label="1/2 — write proposal (retry)",
+                timeout=180,
+            )
+            return result.get("success", False) or _file_has_content(output_path)
 
-        return self._run_step_with_retry(
+        return True
+
+    def _step_write_delta_spec(self, output_path: Path, context: list[Path],
+                               domain: str) -> bool:
+        """Step 2: Write OpenSpec delta spec."""
+        result = self._run_step(
             message=(
                 f"Write an OpenSpec delta spec for domain '{domain}'.\n\n"
                 "Format:\n"
@@ -360,39 +448,35 @@ class SpecAgent(AiderAgent):
             ),
             read_files=context,
             output_path=output_path,
-            label="delta spec.md",
+            label="2/2 — write delta spec",
             timeout=180,
         )
 
-    # ── Utilities ────────────────────────────────────────────────────────
+        if not result.get("success"):
+            decision = self._ask_user_retry("write delta spec", "aider could not write delta spec")
+            if "abort" in decision:
+                return False
+            if "skip" in decision:
+                output_path.write_text(f"# Delta for {domain}\n_Auto-generation skipped._\n")
+                return True
+            # retry
+            result = self._run_step(
+                message=(
+                    f"CRITICAL: Write an OpenSpec delta spec for '{domain}'. "
+                    "Include 5-8 requirements with scenarios."
+                ),
+                read_files=context,
+                output_path=output_path,
+                label="2/2 — write delta spec (retry)",
+                timeout=180,
+            )
+            return result.get("success", False) or _file_has_content(output_path)
 
-    def _check_result(self, result: dict, file_path: Path, label: str) -> bool:
-        """Validate that aider run succeeded and wrote content to file."""
-        success = result.get("success", False)
-        has_content = _file_has_content(file_path)
-
-        logger.info("[spec] %s: success=%s, file_exists=%s, size=%d",
-                     label, success, has_content,
-                     file_path.stat().st_size if has_content else 0)
-
-        if not success:
-            logger.error("[spec] %s failed — aider exit code: %d",
-                         label, result.get("exit_code", -1))
-            stderr = result.get("stderr", "")[:300]
-            if stderr:
-                logger.error("[spec] %s stderr: %s", label, stderr)
-
-        if not has_content:
-            logger.error("[spec] %s — file empty or not created", label)
-            if file_path.exists():
-                file_path.unlink()
-            return False
-
-        self.emit_file_written(file_path)
         return True
 
+    # ── Utilities ────────────────────────────────────────────────────────
+
     def _write_stub_if_empty(self, path: Path, content: str) -> None:
-        """Write stub content if file is empty (for downstream agent placeholders)."""
         if not _file_has_content(path):
             path.write_text(content)
             self.emit_file_written(path)
@@ -414,7 +498,6 @@ class SpecAgent(AiderAgent):
         )
 
     def _project_name(self) -> str:
-        """Read project name from workspace.yaml, fallback to 'project'."""
         try:
             import yaml
             ws = self.workspace / "workspace.yaml"

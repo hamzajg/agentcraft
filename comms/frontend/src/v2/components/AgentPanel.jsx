@@ -1,7 +1,8 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { Badge, Avatar } from './ui'
 
-const OLDER_MESSAGES_LIMIT = 20
+const OLDER_MESSAGES_LIMIT = 10
+const INITIAL_LOAD_COUNT = 10
 
 export function AgentPanel({ channels, statuses, messages, events, activeAgent, setActiveAgent, sending, onReply, busMessages = [], onLoadMessages }) {
   const [showChat, setShowChat] = useState(false)
@@ -11,10 +12,12 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
   const [unreadBusCount, setUnreadBusCount] = useState(0)
   const [seenBusMsgIds, setSeenBusMsgIds] = useState(new Set())
   const [olderMessages, setOlderMessages] = useState([])
+  const [loadingInitial, setLoadingInitial] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [oldestCursor, setOldestCursor] = useState(null)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
+  const [initialLoadDone, setInitialLoadDone] = useState(false)
   const messagesContainerRef = useRef(null)
   const messagesEndRef = useRef(null)
   const sentinelRef = useRef(null)
@@ -70,7 +73,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     })
   }, [markBusMessagesSeen])
 
-  // Visible messages: only the last pending message + older messages loaded via scroll
+  // Visible messages: loaded history (newest 10) + older (scroll) + current pending
   const visibleMessages = useMemo(() => {
     const items = []
     const seen = new Set()
@@ -83,14 +86,22 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
       }
     }
 
-    // Add only the current pending message (not all messages)
+    // Add initially loaded recent messages
+    for (const m of initialMessages) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id)
+        items.push(m)
+      }
+    }
+
+    // Add only the current pending message if not already included
     if (currentPending && !seen.has(currentPending.id)) {
       seen.add(currentPending.id)
       items.push(currentPending)
     }
 
     return items.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-  }, [olderMessages, currentPending])
+  }, [olderMessages, initialMessages, currentPending])
 
   // Detect new messages arriving via WebSocket (for auto-scroll)
   useEffect(() => {
@@ -107,16 +118,26 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
 
   // Reset state when agent selection changes
   useEffect(() => {
+    setInitialMessages([])
     setOlderMessages([])
     setHasMore(true)
     setOldestCursor(null)
     setUserScrolledUp(false)
+    setInitialLoadDone(false)
     prevLiveCountRef.current = 0
     // Mark current bus messages as seen when switching agents
     const newSeen = new Set(seenBusMsgIds)
     for (const m of agentBusMessages) newSeen.add(m.id)
     setSeenBusMsgIds(newSeen)
     setUnreadBusCount(0)
+  }, [activeAgent])
+
+  // Load initial 10 messages when agent changes
+  useEffect(() => {
+    if (activeAgent) {
+      loadInitialMessages()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAgent])
 
   // Load older messages via cursor pagination (triggered by scroll)
@@ -154,7 +175,7 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
   // IntersectionObserver on sentinel — triggers ONLY when user scrolls up
   useEffect(() => {
     const el = sentinelRef.current
-    if (!el || !hasMore) return
+    if (!el || !hasMore || !initialLoadDone) return
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && userScrolledUp) {
@@ -165,17 +186,17 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [loadOlderMessages, hasMore, userScrolledUp])
+  }, [loadOlderMessages, hasMore, initialLoadDone, userScrolledUp])
 
   // Detect user scrolling up
   const handleContainerScroll = useCallback((e) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight
     setUserScrolledUp(distanceFromBottom > 200)
-    if (distanceFromBottom < 50) {
+    if (distanceFromBottom < 50 && initialLoadDone) {
       setUserScrolledUp(false)
     }
-  }, [])
+  }, [initialLoadDone])
 
   const handleAgentClick = (agentId) => {
     setActiveAgent(agentId)
@@ -404,10 +425,10 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
             className="flex-1 overflow-y-auto p-3 space-y-3"
           >
             {/* Sentinel — triggers loading ONLY when user scrolled up */}
-            {hasMore && userScrolledUp && <div ref={sentinelRef} className="h-1" />}
+            {hasMore && initialLoadDone && userScrolledUp && <div ref={sentinelRef} className="h-1" />}
 
             {/* Loading indicator */}
-            {loadingOlder && (
+            {(loadingInitial || loadingOlder) && (
               <div className="flex items-center justify-center py-2">
                 <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
               </div>
@@ -528,13 +549,13 @@ export function AgentPanel({ channels, statuses, messages, events, activeAgent, 
               )
             })}
 
-            {visibleMessages.length === 0 && !loadingOlder && (
+            {visibleMessages.length === 0 && !loadingInitial && !loadingOlder && (
               <div className="flex flex-col items-center justify-center h-full text-slate-500">
                 <svg className="w-12 h-12 mb-4 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                 </svg>
                 <p className="text-sm">
-                  {currentPending ? 'Loading...' : 'No messages yet'}
+                  {currentPending ? 'New message from agent' : 'No messages yet'}
                 </p>
               </div>
             )}

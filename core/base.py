@@ -446,97 +446,98 @@ class AiderAgent:
                 "iteration_id": self.iteration_id,
             })
 
-        for attempt in range(1, self.max_retries + 1):
-            attempt_start = time.time()
-            stdout_buf: list[str] = []
-            stderr_buf: list[str] = []
-            try:
-                proc = subprocess.Popen(
-                    cmd, cwd=str(self.workspace),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, bufsize=1,
-                )
-                import select as _sel
-                deadline = time.time() + timeout
-                while True:
-                    if time.time() > deadline:
-                        proc.kill()
-                        raise subprocess.TimeoutExpired(cmd, timeout)
-                    ready, _, _ = _sel.select(
-                        [proc.stdout, proc.stderr], [], [], 0.1)
-                    if proc.stdout in ready:
-                        ln = proc.stdout.readline()
-                        if ln:
-                            line = ln.rstrip()
-                            stdout_buf.append(ln)
-                            if es:
-                                es.emit("aider_token", {
-                                    "agent": self.role, "text": line,
-                                    "file": edit_file_str, "call_id": call_id,
-                                })
-                            if self.log_callback:
-                                try:
-                                    self.log_callback(self.role, line)
-                                except Exception:
-                                    pass
-                    if proc.stderr in ready:
-                        ln2 = proc.stderr.readline()
-                        if ln2:
-                            stderr_buf.append(ln2)
-                    if proc.poll() is not None:
-                        stdout_buf.append(proc.stdout.read())
-                        stderr_buf.append(proc.stderr.read())
-                        break
-
-                rc          = proc.returncode
-                stdout_text = "".join(stdout_buf)
-                stderr_text = "".join(stderr_buf)
-
-                if es:
-                    es.emit("aider_done", {
-                        "agent": self.role, "file": edit_file_str,
-                        "success": rc == 0, "call_id": call_id,
-                    })
-                
-                if es and call_id.startswith("run-"):
-                    es.emit("task_done", {
-                        "id": call_id,
-                        "agent": self.role,
-                        "file": edit_file_str,
-                        "verdict": "SUCCESS" if rc == 0 else "FAILED",
-                        "attempts": attempt,
-                        "duration_s": round(time.time() - attempt_start, 1)
-                    })
-
-                out = {
-                    "success":   rc == 0,
-                    "stdout":    stdout_text,
-                    "stderr":    stderr_text,
-                    "exit_code": rc,
-                    "parsed":    self._try_parse_json(stdout_text),
-                }
-                if out["success"]:
-                    self.report_status("idle")
-                    for ef in edit_files:
-                        p = Path(ef)
-                        self.ingest(p)
-                        if es and p.exists():
-                            es.emit("file_written", {
-                                "path":  str(p),
-                                "agent": self.role,
-                                "size_bytes": p.stat().st_size,
-                            })
-                    return out
-                logger.warning("[%s] attempt %d failed (exit %d)", self.role, attempt, rc)
-            except subprocess.TimeoutExpired:
-                logger.error("[%s] timeout %ds (attempt %d)", self.role, timeout, attempt)
-                try:
+        # Single-shot execution — no automatic retries
+        # Retries are handled by agents explicitly when user requests them
+        attempt_start = time.time()
+        stdout_buf: list[str] = []
+        stderr_buf: list[str] = []
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=str(self.workspace),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, bufsize=1,
+            )
+            import select as _sel
+            deadline = time.time() + timeout
+            while True:
+                if time.time() > deadline:
                     proc.kill()
-                except Exception:
-                    pass
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                ready, _, _ = _sel.select(
+                    [proc.stdout, proc.stderr], [], [], 0.1)
+                if proc.stdout in ready:
+                    ln = proc.stdout.readline()
+                    if ln:
+                        line = ln.rstrip()
+                        stdout_buf.append(ln)
+                        if es:
+                            es.emit("aider_token", {
+                                "agent": self.role, "text": line,
+                                "file": edit_file_str, "call_id": call_id,
+                            })
+                        if self.log_callback:
+                            try:
+                                self.log_callback(self.role, line)
+                            except Exception:
+                                pass
+                if proc.stderr in ready:
+                    ln2 = proc.stderr.readline()
+                    if ln2:
+                        stderr_buf.append(ln2)
+                if proc.poll() is not None:
+                    stdout_buf.append(proc.stdout.read())
+                    stderr_buf.append(proc.stderr.read())
+                    break
+
+            rc          = proc.returncode
+            stdout_text = "".join(stdout_buf)
+            stderr_text = "".join(stderr_buf)
+
+            if es:
+                es.emit("aider_done", {
+                    "agent": self.role, "file": edit_file_str,
+                    "success": rc == 0, "call_id": call_id,
+                })
+
+            if es and call_id.startswith("run-"):
+                es.emit("task_done", {
+                    "id": call_id,
+                    "agent": self.role,
+                    "file": edit_file_str,
+                    "verdict": "SUCCESS" if rc == 0 else "FAILED",
+                    "attempts": 1,
+                    "duration_s": round(time.time() - attempt_start, 1)
+                })
+
+            out = {
+                "success":   rc == 0,
+                "stdout":    stdout_text,
+                "stderr":    stderr_text,
+                "exit_code": rc,
+                "parsed":    self._try_parse_json(stdout_text),
+            }
+            if out["success"]:
+                self.report_status("idle")
+                for ef in edit_files:
+                    p = Path(ef)
+                    self.ingest(p)
+                    if es and p.exists():
+                        es.emit("file_written", {
+                            "path":  str(p),
+                            "agent": self.role,
+                            "size_bytes": p.stat().st_size,
+                        })
+                return out
+            logger.warning("[%s] run failed (exit %d)", self.role, rc)
+        except subprocess.TimeoutExpired:
+            logger.error("[%s] timeout %ds", self.role, timeout)
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
         self.report_status("idle")
-        return {"success": False, "stdout": "", "stderr": "all attempts failed",
+        return {"success": False, "stdout": "", "stderr": "execution failed",
                 "exit_code": -1, "parsed": None}
 
     def run_readonly(

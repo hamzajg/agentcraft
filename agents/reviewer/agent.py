@@ -1,8 +1,6 @@
 """
-reviewer.py — reads completed task output and decides APPROVED or REWORK.
-
-The reviewer is the loop termination authority.
-It reads the written file + task spec and emits a structured verdict.
+reviewer/agent.py — reads completed task output and decides APPROVED or REWORK.
+Follows the same incremental step + user-controlled retry pattern as all agents.
 """
 
 import logging
@@ -42,30 +40,46 @@ class ReviewerAgent(AiderAgent):
         iteration_id: int = None,
         rag_client=None,
         llm_client=None,
+        **kwargs,
     ):
         super().__init__(
             role="reviewer",
             model=model,
             workspace=workspace,
             system_prompt=SYSTEM_PROMPT if system_prompt is None else system_prompt,
-            skills=skills,
+            skills=skills or [],
             framework_id=framework_id,
-            max_retries=1,
             task_id=task_id,
             iteration_id=iteration_id,
             rag_client=rag_client,
             llm_client=llm_client,
+            **kwargs,
         )
+        self._step_results = []
+
+    def get_step_results(self) -> list[dict]:
+        return list(self._step_results)
+
+    def _run_step(self, message: str, read_files: list[Path],
+                  label: str, timeout: int = 90) -> dict:
+        result = self.run_readonly(message=message, read_files=read_files, timeout=timeout)
+        success = result is not None and len(result.strip()) > 0
+        self._step_results.append({"label": label, "success": success, "file": ""})
+        if not success:
+            logger.warning("[reviewer] step FAILED: %s", label)
+        return result
+
+    def _ask_user_retry(self, step_label: str, error_detail: str) -> str:
+        reply = self.ask(
+            question=f"Step '{step_label}' failed: {error_detail}. What should I do?",
+            suggestions=["Retry this step", "Skip this step", "Abort"],
+            timeout=300,
+        )
+        return (reply or "").lower().strip()
 
     def handle_query(self, question: str, context: dict) -> str:
-        """
-        Handle queries from other agents.
-        Any agent can ask the reviewer a quick opinion via:
-            answer = self.ask_agent("reviewer", "Is this approach correct?", context)
-        Uses local LLM with reviewer persona for fast answers.
-        """
-        code    = context.get("code", context.get("code_snippet", ""))
-        file    = context.get("file", "")
+        code = context.get("code", context.get("code_snippet", ""))
+        file = context.get("file", "")
         if self._llm:
             prompt = (
                 "You are an expert code reviewer.\n"
@@ -78,18 +92,7 @@ class ReviewerAgent(AiderAgent):
             return self._llm.chat(prompt) or "No opinion available."
         return "Reviewer LLM not available."
 
-
     def review(self, task: dict, docs_dir: Path) -> ReviewVerdict:
-        """
-        Review a completed task's output file against its spec.
-
-        The reviewer must output one of:
-          APPROVED
-          REWORK: <one-line reason>
-          REWORK: <one-line reason>
-          - suggestion 1
-          - suggestion 2
-        """
         target_file = self.workspace / task["file"]
         if not target_file.exists():
             logger.warning("[reviewer] file not found: %s", target_file)
@@ -123,19 +126,21 @@ REWORK: <one-line reason>
 - <specific fix needed>
 - <specific fix needed>
 """
-        output = self.run_readonly(
-            message=message,
-            read_files=read_files,
-            timeout=90,
-        )
+        output = self._run_step(message, read_files, "review task", timeout=90)
+        if not output or len(output.strip()) == 0:
+            decision = self._ask_user_retry("review task", "reviewer returned no verdict")
+            if "abort" in decision:
+                return ReviewVerdict(approved=False, reason="Review aborted", suggestions=[])
+            if "skip" in decision:
+                return ReviewVerdict(approved=True, reason="Auto-approved after skip", suggestions=[])
+            output = self._run_step(
+                f"CRITICAL: Review the file {task['file']} and respond with APPROVED or REWORK.",
+                read_files, "review task (retry)", timeout=90,
+            )
 
-        return self._parse_verdict(output, task["file"])
+        return self._parse_verdict(output or "", task["file"])
 
     def review_iteration(self, iteration: dict, tasks: list[dict], docs_dir: Path) -> ReviewVerdict:
-        """
-        Review the entire iteration output holistically.
-        Called after all tasks in an iteration pass individual review.
-        """
         written_files = [
             self.workspace / t["file"]
             for t in tasks
@@ -163,19 +168,25 @@ or:
 REWORK: <reason>
 - <fix>
 """
-        output = self.run_readonly(
-            message=message,
-            read_files=read_files,
-            timeout=90,
-        )
-        return self._parse_verdict(output, f"iteration {iteration['id']}")
+        output = self._run_step(message, read_files, "review iteration", timeout=90)
+        if not output or len(output.strip()) == 0:
+            decision = self._ask_user_retry("review iteration", "reviewer returned no verdict")
+            if "abort" in decision:
+                return ReviewVerdict(approved=False, reason="Review aborted", suggestions=[])
+            if "skip" in decision:
+                return ReviewVerdict(approved=True, reason="Auto-approved after skip", suggestions=[])
+            output = self._run_step(
+                "CRITICAL: Review the iteration and respond with APPROVED or REWORK.",
+                read_files, "review iteration (retry)", timeout=90,
+            )
+
+        return self._parse_verdict(output or "", f"iteration {iteration['id']}")
 
     @staticmethod
     def _parse_verdict(text: str, context: str) -> ReviewVerdict:
         text = text.strip()
         lines = [l.strip() for l in text.splitlines() if l.strip()]
 
-        # Find APPROVED or REWORK line
         for i, line in enumerate(lines):
             upper = line.upper()
             if upper.startswith("APPROVED"):
@@ -190,7 +201,6 @@ REWORK: <reason>
                 logger.info("[reviewer] REWORK %s: %s (%d suggestions)", context, reason, len(suggestions))
                 return ReviewVerdict(approved=False, reason=reason, suggestions=suggestions)
 
-        # No clear verdict — treat as rework
         logger.warning("[reviewer] no clear verdict for %s — defaulting to REWORK", context)
         return ReviewVerdict(
             approved=False,

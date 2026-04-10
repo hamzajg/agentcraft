@@ -1,13 +1,8 @@
 """
-cicd.py — CI/CD and infrastructure agent.
+cicd/agent.py — CI/CD and infrastructure agent.
 
-Responsible for infrastructure files when explicitly requested:
-  - Containerization (Docker, etc.)
-  - CI/CD pipelines
-  - Deployment configuration
-  - Developer convenience scripts
-
-Runs as a dedicated iteration when infrastructure is requested.
+Responsible for infrastructure files when explicitly requested.
+Follows the same incremental step + user-controlled retry pattern as all agents.
 """
 
 import logging
@@ -18,6 +13,17 @@ from core.base import AiderAgent
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the CI/CD Agent. Set up infrastructure and deployment infrastructure when requested."""
+
+
+def _ensure_file(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.touch()
+    return path
+
+
+def _file_has_content(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
 
 
 class CiCdAgent(AiderAgent):
@@ -34,60 +40,67 @@ class CiCdAgent(AiderAgent):
         iteration_id: int = None,
         rag_client=None,
         llm_client=None,
+        **kwargs,
     ):
         super().__init__(
             role="cicd",
             model=model,
             workspace=workspace,
-            system_prompt=SYSTEM_PROMPT if system_prompt is None else system_prompt,
-            skills=skills,
+            system_prompt=system_prompt or SYSTEM_PROMPT,
+            skills=skills or [],
             framework_id=framework_id,
-            max_retries=2,
             task_id=task_id,
             iteration_id=iteration_id,
             rag_client=rag_client,
             llm_client=llm_client,
+            **kwargs,
         )
+        self._step_results = []
+
+    def get_step_results(self) -> list[dict]:
+        return list(self._step_results)
+
+    def _run_step(self, message: str, read_files: list[Path],
+                  output_path: Path = None, label: str = None, timeout: int = 120) -> dict:
+        kwargs = {"message": message, "read_files": read_files, "timeout": timeout, "log_callback": self.log_callback}
+        if output_path:
+            kwargs["edit_files"] = [output_path]
+        result = self.run(**kwargs)
+        if label:
+            success = result.get("success", False)
+            if output_path:
+                success = success and _file_has_content(output_path)
+            self._step_results.append({"label": label, "success": success, "file": str(output_path) if output_path else ""})
+            if not success:
+                logger.warning("[cicd] step FAILED: %s", label)
+        return result
+
+    def _ask_user_retry(self, step_label: str, error_detail: str) -> str:
+        reply = self.ask(
+            question=f"Step '{step_label}' failed: {error_detail}. What should I do?",
+            suggestions=["Retry this step", "Skip this step", "Abort"],
+            timeout=300,
+        )
+        return (reply or "").lower().strip()
 
     def build_phase_infra(self, phase: int, docs_dir: Path) -> list[dict]:
-        """
-        Produce infrastructure files for a completed phase.
-        Let the LLM decide what infrastructure is appropriate.
-        Returns list of results, one per file written.
-        """
         results = []
-
-        # Let the LLM determine what's needed based on the project
         context = self._gather_infrastructure_context(docs_dir)
         results += self._generate_infrastructure(context, docs_dir)
-
         return results
 
     def _gather_infrastructure_context(self, docs_dir: Path) -> dict:
-        """Gather context about what infrastructure might be needed."""
         read_files = list(docs_dir.glob("*.md"))
-
-        # Check for existing project files
         existing_files = []
         for pattern in ["Makefile", "Dockerfile", "docker-compose.yml", "*.yaml", "*.yml", "package.json", "pom.xml", "Cargo.toml", "go.mod", "requirements.txt"]:
             existing_files.extend(self.workspace.glob(pattern))
-
-        return {
-            "read_files": read_files,
-            "existing_files": existing_files,
-            "workspace": self.workspace,
-        }
+        return {"read_files": read_files, "existing_files": existing_files, "workspace": self.workspace}
 
     def _generate_infrastructure(self, context: dict, docs_dir: Path) -> list[dict]:
-        """
-        Generate infrastructure files based on project context.
-        Let the LLM decide what's appropriate for this project.
-        """
         results = []
-
         read_files = context["read_files"]
 
-        # Ask the LLM to determine what infrastructure is needed
+        # Step 1: Determine what's needed
         message = """
 Based on the project context, determine what infrastructure files are needed.
 
@@ -103,6 +116,6 @@ If no infrastructure is needed, return an empty result.
 Output files to workspace as appropriate for the project type.
 """
         logger.info("[cicd] determining infrastructure needs")
-        r = self.run(message=message, read_files=read_files, edit_files=[], timeout=120, log_callback=self.log_callback)
-        results.append({"output": r.get("output", ""), "file": "infrastructure"})
+        result = self._run_step(message, read_files, label="determine infrastructure needs", timeout=120)
+        results.append({"output": result.get("output", ""), "file": "infrastructure"})
         return results

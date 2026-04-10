@@ -2,15 +2,7 @@
 supervisor/agent.py — Supervisor agent.
 
 ROLE: Context gatherer and task orchestrator.
-
-This agent:
-- Gathers context from the workspace, docs, and other agents
-- Prepares information for LLM decision-making
-- Executes tasks by delegating to specialized agents
-- Monitors progress and reports status
-
-ALL DECISIONS ARE MADE BY LLM within this agent.
-No hardcoded decision logic exists here.
+Follows the same incremental step + user-controlled retry pattern as all agents.
 """
 
 import json
@@ -28,6 +20,17 @@ Your role is to orchestrate the AI agent team by gathering context and delegatin
 """
 
 
+def _ensure_file(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.touch()
+    return path
+
+
+def _file_has_content(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
+
+
 class SupervisorAgent(AiderAgent):
     _role = "supervisor"
 
@@ -42,6 +45,7 @@ class SupervisorAgent(AiderAgent):
         iteration_id: int = None,
         rag_client=None,
         llm_client=None,
+        **kwargs,
     ):
         super().__init__(
             role="supervisor",
@@ -50,15 +54,43 @@ class SupervisorAgent(AiderAgent):
             system_prompt=system_prompt or SYSTEM_PROMPT,
             skills=skills or [],
             framework_id=framework_id,
-            max_retries=1,
             task_id=task_id,
             iteration_id=iteration_id,
             rag_client=rag_client,
             llm_client=llm_client,
+            **kwargs,
         )
+        self._step_results = []
+
+    def get_step_results(self) -> list[dict]:
+        return list(self._step_results)
+
+    def _run_step(self, message: str, read_files: list[Path] = None,
+                  output_path: Path = None, label: str = None, timeout: int = 180) -> dict:
+        kwargs = {"message": message, "timeout": timeout, "log_callback": self.log_callback}
+        if read_files:
+            kwargs["read_files"] = read_files
+        if output_path:
+            kwargs["edit_files"] = [output_path]
+        result = self.run(**kwargs)
+        if label:
+            success = result.get("success", False)
+            if output_path:
+                success = success and _file_has_content(output_path)
+            self._step_results.append({"label": label, "success": success, "file": str(output_path) if output_path else ""})
+            if not success:
+                logger.warning("[supervisor] step FAILED: %s", label)
+        return result
+
+    def _ask_user_retry(self, step_label: str, error_detail: str) -> str:
+        reply = self.ask(
+            question=f"Step '{step_label}' failed: {error_detail}. What should I do?",
+            suggestions=["Retry this step", "Skip this step", "Abort"],
+            timeout=300,
+        )
+        return (reply or "").lower().strip()
 
     def _log(self, message: str):
-        """Send log message to comms server if callback is set."""
         if self.log_callback:
             try:
                 self.log_callback(self.role, message)
@@ -67,68 +99,35 @@ class SupervisorAgent(AiderAgent):
         logger.info("[supervisor] %s", message)
 
     def gather_project_context(self) -> dict:
-        """
-        Gather all relevant context for the project.
-        
-        Returns:
-            Dictionary containing workspace, docs, and agent state.
-        """
-        context = {
+        return {
             "workspace": self._gather_workspace_info(),
             "docs": self._gather_docs_info(),
             "agents": self._gather_agent_info(),
         }
-        return context
 
     def _gather_workspace_info(self) -> dict:
-        """Gather workspace information."""
         workspace_info = {"path": str(self.workspace)}
-        
         workspace_yaml = self.workspace / "workspace.yaml"
         if workspace_yaml.exists():
             import yaml
             workspace_info["config"] = yaml.safe_load(workspace_yaml.read_text())
-        
         return workspace_info
 
     def _gather_docs_info(self) -> dict:
-        """Gather documentation information."""
         docs_dir = self.workspace / "docs"
         ai_dir = self.workspace / ".ai"
-        
-        docs_info = {
-            "exists": docs_dir.exists(),
-            "files": [],
-        }
-        
+        docs_info = {"exists": docs_dir.exists(), "files": []}
         if docs_dir.exists():
-            docs_info["files"] = [
-                {"name": f.name, "path": str(f)}
-                for f in docs_dir.glob("*.md")
-            ]
-        
-        ai_info = {
-            "exists": ai_dir.exists(),
-            "files": [],
-        }
-        
+            docs_info["files"] = [{"name": f.name, "path": str(f)} for f in docs_dir.glob("*.md")]
+        ai_info = {"exists": ai_dir.exists(), "files": []}
         if ai_dir.exists():
-            ai_info["files"] = [
-                {"name": f.name, "path": str(f)}
-                for f in ai_dir.glob("*.md")
-            ]
-            ai_info["files"].extend([
-                {"name": f.name, "path": str(f)}
-                for f in ai_dir.glob("*.json")
-            ])
-        
+            ai_info["files"] = [{"name": f.name, "path": str(f)} for f in ai_dir.glob("*.md")]
+            ai_info["files"].extend([{"name": f.name, "path": str(f)} for f in ai_dir.glob("*.json")])
         return {"docs": docs_info, "workflow": ai_info}
 
     def _gather_agent_info(self) -> dict:
-        """Gather information about available agents."""
         from core.bus import AgentBus
         bus = AgentBus.instance()
-        
         return {
             "available_agents": list(bus.list_agents()),
             "context_snapshot": bus.context_snapshot(),
@@ -140,20 +139,8 @@ class SupervisorAgent(AiderAgent):
         task_description: str,
         context: dict = None,
     ) -> str:
-        """
-        Prepare a clear task prompt for a specific agent.
-        
-        Args:
-            agent_role: Which agent should execute the task
-            task_description: What needs to be done
-            context: Additional context to include
-            
-        Returns:
-            Formatted prompt for the agent
-        """
         context_str = json.dumps(context, indent=2) if context else "No additional context."
-        
-        prompt = f"""## Task for {agent_role}
+        return f"""## Task for {agent_role}
 
 ### Task Description
 {task_description}
@@ -169,10 +156,8 @@ class SupervisorAgent(AiderAgent):
 
 Be thorough and follow best practices for {agent_role} work.
 """
-        return prompt
 
     def _query_llm(self, prompt: str) -> dict:
-        """Query the LLM and return structured JSON response."""
         if self._llm:
             response = self._llm.generate(prompt, model=self.model)
         else:
@@ -182,10 +167,12 @@ Be thorough and follow best practices for {agent_role} work.
         return self._parse_llm_response(response)
 
     def _parse_llm_response(self, response: str) -> dict:
-        """Parse JSON from LLM response."""
         json_match = re.search(r'```json\s*\n(.*?)\n```', response, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group(1))
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
         try:
             return json.loads(response)
         except json.JSONDecodeError:
@@ -198,13 +185,9 @@ Be thorough and follow best practices for {agent_role} work.
         current_state: dict,
         history: list[dict] = None,
     ) -> dict:
-        """Decide what action to take next using LLM."""
         history_text = ""
         if history:
-            history_text = "\n".join([
-                f"- {h.get('action')}: {h.get('reasoning', '')[:100]}"
-                for h in history[-5:]
-            ])
+            history_text = "\n".join([f"- {h.get('action')}: {h.get('reasoning', '')[:100]}" for h in history[-5:]])
         state_text = json.dumps(current_state, indent=2)
         prompt = f"""You are a decision-making agent. Based on the current state and available actions, decide what to do next.
 
@@ -237,7 +220,6 @@ Respond ONLY with valid JSON:
         requirements: list[str],
         previous_feedback: list[str] = None,
     ) -> dict:
-        """Decide whether to approve a submission using LLM."""
         req_text = "\n".join([f"- {r}" for r in requirements])
         fb_text = "\n".join([f"- {f}" for f in previous_feedback]) if previous_feedback else "No previous feedback."
         prompt = f"""You are a code review agent. Decide whether to approve this submission.
@@ -271,7 +253,6 @@ Respond ONLY with valid JSON:
         available_agents: list[dict],
         current_team: list[str] = None,
     ) -> dict:
-        """Decide which agents should work on a task using LLM."""
         agents_text = json.dumps(available_agents, indent=2)
         current_text = json.dumps(current_team) if current_team else "None"
         prompt = f"""You are an orchestration agent. Decide which AI agents should work on this task.
@@ -305,7 +286,6 @@ Respond ONLY with valid JSON:
         phase_completion: dict,
         overall_progress: float,
     ) -> dict:
-        """Decide whether to transition to the next phase using LLM."""
         prompt = f"""You are a project management agent. Decide if we should transition to the next phase.
 
 ## Current State
@@ -333,16 +313,6 @@ Respond ONLY with valid JSON:
         decision_type: str,
         context: dict,
     ) -> dict:
-        """
-        Request a decision from the LLM.
-        
-        Args:
-            decision_type: Type of decision (next_action, approval, team, etc.)
-            context: Context for the decision
-            
-        Returns:
-            LLM's decision response
-        """
         if decision_type == "next_action":
             return self.decide_next_action(
                 available_actions=context.get("available_actions", []),
@@ -371,36 +341,24 @@ Respond ONLY with valid JSON:
             return {"error": f"Unknown decision type: {decision_type}"}
 
     def execute_phase_0_plan(self, workspace: dict) -> dict:
-        """
-        Execute Phase 0: Delegate to Architect for requirements gathering.
-        
-        Supervisor delegates requirement gathering to @architect who asks the user.
-        
-        Args:
-            workspace: Workspace configuration
-            
-        Returns:
-            {"status": "success", "docs_generated": {...}}
-        """
         self.report_status("running")
         self._log("Executing Phase 0: Delegating to @architect for requirements")
-        
+
         docs_dir = Path(workspace.get("docs_dir", "docs"))
         docs_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.share_context("supervisor.phase0_plan", {
             "status": "delegating_to_architect",
             "phase": 0,
         })
-        
+
         self.broadcast("phase0_started", {
             "strategy": "architect_delegation",
             "delegating_to": "architect",
         })
-        
-        # Supervisor tells user it's delegating to @architect
+
         self.info("Phase 0: Starting requirements gathering. @architect will ask you a few questions about your project vision.", file=None)
-        
+
         from agents.architect.agent import ArchitectAgent
         architect = ArchitectAgent(
             model=self.model,
@@ -409,9 +367,9 @@ Respond ONLY with valid JSON:
             llm_client=self._llm,
         )
         architect.log_callback = self.log_callback
-        
+
         user_input = architect.gather_requirements(docs_dir)
-        
+
         if not user_input:
             self._log("No user response received from architect")
             self.share_context("supervisor.phase0_plan", {
@@ -420,9 +378,9 @@ Respond ONLY with valid JSON:
             })
             self.report_status("idle")
             return {"status": "failed", "reason": "no user response"}
-        
+
         self._log(f"Architect gathered requirements: {user_input[:100]}...")
-        
+
         from agents.docs_agent.agent import DocsAgent
         docs_agent = DocsAgent(
             model=self.model,
@@ -430,21 +388,21 @@ Respond ONLY with valid JSON:
             rag_client=self._rag,
             llm_client=self._llm,
         )
-        
+
         generated_docs = docs_agent.generate_phase0_docs(
             user_input=user_input,
             docs_dir=docs_dir,
         )
-        
+
         self.share_context("supervisor.phase0_plan", {
             "status": "completed",
             "docs_generated": {k: str(v) for k, v in generated_docs.items()},
         })
-        
+
         self.broadcast("phase0_completed", {
             "docs_generated": [str(v) for v in generated_docs.values()],
         })
-        
+
         self.report_status("idle")
         return {
             "status": "success",

@@ -966,12 +966,20 @@ Respond with JSON:
         self._comms.info("Starting Phase: Specification (generating spec.md and use_cases.md)")
         spec_file, uc_file = self.spec_agent.specify(self.docs_dir)
 
-        # Last-resort: if spec agent exhausted retries and files are still empty, create stubs
+        # Report step-by-step results to user
+        step_results = self.spec_agent.get_step_results()
+        failed_steps = [s for s in step_results if not s["success"]]
+        if failed_steps:
+            failed_labels = ", ".join(s["label"] for s in failed_steps)
+            logger.warning("[orchestrator] spec phase failed steps: %s", failed_labels)
+            self._comms.info(f"Spec generation had {len(failed_steps)} failed step(s): {failed_labels}")
+
+        # Last-resort: create stubs for empty files
         ai_dir = self.workspace / ".ai"
         for f in [spec_file, uc_file]:
             if f is not None and (not f.exists() or f.stat().st_size == 0):
-                logger.warning(f"[orchestrator] spec agent exhausted retries — creating stub {f.name}")
-                f.write_text(f"# {f.name}\n\n_Generation failed after multiple retries._")
+                logger.warning(f"[orchestrator] creating stub {f.name} (spec agent could not generate content)")
+                f.write_text(f"# {f.name}\n\n_Auto-generated stub. Content pending manual input._")
 
         ES.emit("phase_done", {"phase": 0, "duration_s": round(time.time() - start, 1)})
 
