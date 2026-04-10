@@ -319,8 +319,8 @@ Respond with a detailed architecture description in JSON format:
         # Build a clear requirements summary
         req_summary = requirements if len(requirements) < 3000 else requirements[:3000] + "\n\n[... truncated ...]"
 
-        # Step 1: Ask for high-level plan (small response)
-        plan_prompt = f"""Analyze these requirements and tell me the implementation plan structure.
+        # Step 1: Ask LLM to determine language/tech + plan structure
+        plan_prompt = f"""Analyze these requirements and tell me the implementation plan.
 
 ## Requirements Summary
 {req_summary}
@@ -328,61 +328,73 @@ Respond with a detailed architecture description in JSON format:
 ## Architecture Style
 {arch_context}
 
-Respond with ONLY this JSON (small response):
+Respond with ONLY this JSON:
 {{
   "num_phases": 1,
   "num_iterations": 2,
-  "complexity": "simple|medium|complex",
-  "rationale": "one sentence why this plan size"
+  "language": "detected or best-fit language",
+  "file_ext": ".ext or empty string if not applicable",
+  "main_file": "appropriate main filename for the language",
+  "build_tool": "build system if any",
+  "rationale": "one sentence"
 }}"""
 
         plan_result = self._run_step(plan_prompt, label="plan structure", timeout=120)
         plan_info = self._parse_plan_structure(plan_result.get("output", "{}"))
-        
+
         num_phases = plan_info.get("num_phases", 1)
         num_iterations = plan_info.get("num_iterations", 2)
-        
+        lang = plan_info.get("language", "unspecified")
+        file_ext = plan_info.get("file_ext", "")
+        main_file = plan_info.get("main_file", "main")
+        build_tool = plan_info.get("build_tool", "")
+
         # Sanity check
         if num_iterations < 1:
             num_iterations = 2
         if num_iterations > 20:
             num_iterations = 10
 
-        self._log(f"Plan: {num_phases} phases, {num_iterations} iterations")
+        self._log(f"Plan: {num_phases} phases, {num_iterations} iterations, lang: {lang}")
 
         # Step 2: Generate each iteration one at a time (small responses)
         iterations = []
         for i in range(1, num_iterations + 1):
             # Determine phase (simple distribution)
             phase = min(1 + (i - 1) // max(1, num_iterations // num_phases), num_phases)
-            
+
             # Get previous iterations for context
             prev_context = json.dumps(iterations[-2:]) if len(iterations) >= 2 else "none"
-            
+
             iter_prompt = f"""Create iteration {i} of {num_iterations} (phase {phase}).
 
 ## Goal
 {plan_info.get('rationale', 'Implement the requirements')}
 
+## Technology
+Language: {lang}
+Build tool: {build_tool}
+File extension: {file_ext}
+
 ## Previous Iterations
 {prev_context}
 
-Respond with ONLY this JSON (small response):
+Respond with ONLY this JSON:
 {{
   "id": {i},
   "phase": {phase},
   "name": "short name 3-6 words",
   "goal": "one sentence",
-  "files_expected": ["file1.py", "file2.py"],
+  "files_expected": ["src/{main_file}{file_ext}"],
   "depends_on": [{max(0, i-1)}],
   "acceptance_criteria": ["criteria1", "criteria2"]
 }}"""
 
             iter_result = self._run_step(iter_prompt, label=f"iteration {i}", timeout=90)
             iteration = self._parse_single_iteration(iter_result.get("output", "{}"))
-            
+
             if iteration:
-                iteration["id"] = i  # Ensure correct ID
+                iteration["id"] = i
                 iteration["phase"] = phase
                 if i == 1:
                     iteration["depends_on"] = []
@@ -392,9 +404,27 @@ Respond with ONLY this JSON (small response):
                 self._log(f"  ✓ Iteration {i}: {iteration.get('name', 'unnamed')}")
             else:
                 self._log(f"  ✗ Iteration {i} failed — creating minimal version")
-                iterations.append(self._minimal_single_iteration(i, phase))
+                iterations.append(self._minimal_single_iteration(i, phase, plan_info))
 
         return iterations
+
+    def _minimal_single_iteration(self, iteration_id: int, phase: int, plan_info: dict) -> dict:
+        """Create a minimal iteration using LLM-detected technology context."""
+        lang = plan_info.get("language", "unspecified")
+        file_ext = plan_info.get("file_ext", "")
+        main_file = plan_info.get("main_file", "main")
+
+        files = [f"src/{main_file}{file_ext}"] if file_ext else [f"src/{main_file}"]
+
+        return {
+            "id": iteration_id,
+            "phase": phase,
+            "name": f"implement features part {iteration_id}",
+            "goal": f"Implement core functionality in {lang}",
+            "files_expected": files,
+            "depends_on": [iteration_id - 1] if iteration_id > 1 else [],
+            "acceptance_criteria": ["file created", "runs without errors"]
+        }
 
     def _parse_plan_structure(self, output: str) -> dict:
         """Parse high-level plan structure JSON."""
