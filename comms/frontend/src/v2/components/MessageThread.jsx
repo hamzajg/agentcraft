@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react'
 import { api } from '../../lib/api'
 import { Card, CardBody, CardHeader, Badge, Button } from './ui'
 import { Avatar } from './ui/Avatar'
@@ -15,20 +15,30 @@ export function MessageThread({ messages: propMessages, activeAgent, onReply, on
   const bottomRef = useRef(null)
   const sentinelRef = useRef(null)
 
-  const allMessages = [...recentMessages, ...propMessages]
-  const visibleMessages = useMemo(() => allMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)), [allMessages])
+  const visibleMessages = useMemo(() => {
+    const seen = new Set()
+    const items = []
+    ;[...olderMessages, ...recentMessages, ...propMessages].forEach(m => {
+      if (!seen.has(m.id)) {
+        seen.add(m.id)
+        items.push(m)
+      }
+    })
+    return items.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+  }, [olderMessages, recentMessages, propMessages])
 
   const pendingMessage = visibleMessages.find(m => m.status === 'pending')
 
   const loadRecent = async () => {
     if (!activeAgent) return
     try {
-      const msgs = await api.messages(activeAgent)
+      const data = await api.older(activeAgent, null, 50)
+      const msgs = data.reverse() // assume older returns newest first -> reverse for chronological
       setRecentMessages(msgs)
       if (msgs.length > 0) {
         const oldest = msgs.reduce((min, m) => new Date(m.created_at) < new Date(min.created_at) ? m : min)
         setOldestCursor(oldest.created_at)
-        setHasMore(true)
+        setHasMore(data.length === 50)
       }
     } catch (e) {
       console.error('load recent failed', e)
@@ -77,9 +87,11 @@ export function MessageThread({ messages: propMessages, activeAgent, onReply, on
     return () => observer.disconnect()
   }, [loadOlder, hasMore, loadingOlder, userScrolledUp])
 
-  useEffect(() => {
-    if (!userScrolledUp) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  useLayoutEffect(() => {
+    if (!userScrolledUp && bottomRef.current && containerRef.current) {
+      requestAnimationFrame(() => {
+        bottomRef.current.scrollIntoView({ behavior: 'smooth' })
+      })
     }
   }, [visibleMessages.length, userScrolledUp])
 

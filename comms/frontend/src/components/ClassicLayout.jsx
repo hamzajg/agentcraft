@@ -150,12 +150,13 @@ export function ClassicLayout() {
   const loadRecent = async (agentId) => {
     if (!agentId) return
     try {
-      const msgs = await api.messages(agentId)
+      const data = await api.older(agentId, null, 50)
+      const msgs = data.reverse()
       setRecentMessages(msgs)
       if (msgs.length > 0) {
         const oldest = msgs.reduce((min, m) => new Date(m.created_at) < new Date(min.created_at) ? m : min)
         setOldestCursor(oldest.created_at)
-        setHasMore(msgs.length === 50) // assume limit 50
+        setHasMore(data.length === 50)
       }
     } catch (e) {
       console.error('failed to load recent history', e)

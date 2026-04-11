@@ -75,9 +75,8 @@ class DocsAgent(AiderAgent):
 
         logger.info("[docs_agent] step %d: %s", attempt, label)
 
-        result = self.run(
-            message=message, read_files=read_files, edit_files=[output_path],
-            timeout=timeout, log_callback=self.log_callback,
+        result = self.run_stream_to_file(
+            message=message, read_files=read_files, output_path=output_path,
         )
         success = result.get("success", False) and _file_has_content(output_path)
 

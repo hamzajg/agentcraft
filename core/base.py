@@ -581,6 +581,97 @@ class AiderAgent:
             self.report_status("idle")
             return ""
 
+    def run_stream_to_file(
+        self,
+        message: str,
+        read_files: list[Path],
+        output_path: Path,
+    ) -> dict:
+        """
+        Bypasses Aider to stream LLM generation directly into a file on disk.
+        Perfect for greenfield document generation to provide real-time editor feedback.
+        """
+        self.report_status("running")
+        
+        # 1. Build prompt with injected read_files
+        context_str = ""
+        all_reads = self._skill_runner.resolve(self.skills) + read_files
+        if all_reads:
+            context_str += "## Context Files:\n"
+            for rf in all_reads:
+                if rf.exists():
+                    context_str += f"\n### {rf.name}\n```\n{rf.read_text()}\n```\n"
+
+        system_instruction = (
+            (self.system_prompt or "") + "\n\n"
+            "CRITICAL INSTRUCTION: You are generating a raw file. Output strictly the file content itself. "
+            "Do NOT wrap your response in markdown formatting blocks like ```markdown. "
+            "Do NOT include any conversational text like 'Here is the file'. "
+            "Just output the raw file contents directly."
+        )
+
+        full_prompt = context_str + "\n\n" + message
+        
+        call_id = f"run-stream-{str(id(message))[:6]}"
+        es = _es()
+        
+        if es:
+            es.emit("task_started", {
+                "id": call_id,
+                "agent": self.role,
+                "file": str(output_path),
+                "description": message[:120],
+                "iteration_id": self.iteration_id,
+            })
+            
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        import time
+        attempt_start = time.time()
+        
+        try:
+            # Stream directly to the file
+            content_buf = []
+            with open(output_path, "w") as f:
+                for token in self._llm.stream(prompt=full_prompt, system=system_instruction):
+                    f.write(token)
+                    f.flush()
+                    content_buf.append(token)
+                    
+                    if es:
+                        # We stream tokens, but aider_token usually expects lines.
+                        # It's fine to emit partials if the UI can handle it, or just omit to reduce socket noise.
+                        pass
+                        
+            # Clean up markdown fences just in case the LLM disobeyed
+            full_content = "".join(content_buf).strip()
+            if full_content.startswith("```markdown"):
+                full_content = full_content[11:].strip()
+                if full_content.endswith("```"):
+                    full_content = full_content[:-3].strip()
+                output_path.write_text(full_content)
+
+            self.ingest(output_path)
+            if es and output_path.exists():
+                es.emit("file_written", {
+                    "path":  str(output_path),
+                    "agent": self.role,
+                    "size_bytes": output_path.stat().st_size,
+                })
+            
+            if es:
+                es.emit("task_done", {
+                    "id": call_id, "agent": self.role, "file": str(output_path),
+                    "verdict": "SUCCESS", "attempts": 1, "duration_s": round(time.time() - attempt_start, 1)
+                })
+
+            self.report_status("idle")
+            return {"success": True, "exit_code": 0, "stdout": full_content, "stderr": ""}
+
+        except Exception as e:
+            logger.error("[%s] run_stream_to_file failed: %s", self.role, e)
+            self.report_status("idle")
+            return {"success": False, "exit_code": -1, "stdout": "", "stderr": str(e)}
+
     @staticmethod
     def read_json(self, path, default=None):
         """Read JSON from a file Aider wrote. Strips markdown fences."""
