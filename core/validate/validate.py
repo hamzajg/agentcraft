@@ -44,6 +44,12 @@ def _find_workspace_root() -> Path:
     for d in [cur] + list(cur.parents):
         if (d / "workspace.yaml").exists():
             return d
+            
+    # Try finding inside subdirectories depth 1
+    sub_ws = list(cur.glob("*/workspace.yaml"))
+    if len(sub_ws) == 1:
+        return sub_ws[0].parent
+        
     return REPO_ROOT  # fallback to installation dir
 
 
@@ -211,11 +217,14 @@ def check_workspace_yaml_present(report: Report):
 
 def get_staged_files() -> list[str]:
     try:
+        git_root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
         result = subprocess.run(
             ["git", "diff", "--cached", "--name-only"], capture_output=True, text=True
         )
+        if git_root:
+            return [str(Path(git_root) / f) for f in result.stdout.splitlines()]
         return result.stdout.splitlines()
-    except FileNotFoundError:
+    except Exception:
         return []
 
 

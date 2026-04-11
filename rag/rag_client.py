@@ -46,8 +46,8 @@ class RagClient:
         Must be called before any retrieve/ingest calls.
         """
         try:
-            self._store   = RagStore(self._store_path)
-            self._indexer = Indexer(self._store)
+            self._store   = RagStore(self._store_path, self._embed_model)
+            self._indexer = Indexer(self._store, self._embed_model)
             self._enabled = True
             logger.info("[rag] store opened at %s", self._store_path)
             return True
@@ -189,13 +189,14 @@ class RagStore:
 
     TABLE_NAME = "chunks"
 
-    def __init__(self, store_path: Path):
+    def __init__(self, store_path: Path, embed_model: str = "nomic-embed-text"):
         import lancedb
-        from rag.schema import CHUNK_SCHEMA
+        from rag.schema import get_chunk_schema
+        self._embed_model = embed_model
         store_path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(store_path))
         if self.TABLE_NAME not in self._db.table_names():
-            self._table = self._db.create_table(self.TABLE_NAME, schema=CHUNK_SCHEMA)
+            self._table = self._db.create_table(self.TABLE_NAME, schema=get_chunk_schema(self._embed_model))
             logger.info("[rag] created new table '%s'", self.TABLE_NAME)
         else:
             self._table = self._db.open_table(self.TABLE_NAME)
@@ -221,8 +222,8 @@ class RagStore:
 
     def upsert(self, rows: list[dict]):
         import pyarrow as pa
-        from rag.schema import CHUNK_SCHEMA
-        batch = pa.RecordBatch.from_pylist(rows, schema=CHUNK_SCHEMA)
+        from rag.schema import get_chunk_schema
+        batch = pa.RecordBatch.from_pylist(rows, schema=get_chunk_schema(self._embed_model))
         self._table.add(batch)
 
     def search(

@@ -21,17 +21,17 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_BASE      = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
 OLLAMA_EMBED_URL = f"{OLLAMA_BASE}/api/embeddings"
-EMBED_MODEL      = "nomic-embed-text"
 BATCH_SIZE       = 16   # chunks per embedding request
 
 
 class Indexer:
 
-    def __init__(self, store):
+    def __init__(self, store, embed_model: str = "nomic-embed-text"):
         """
         store: RagStore instance (provides .table and .get_hashes())
         """
         self._store = store
+        self._embed_model = embed_model
 
     def index_file(self, path: Path, collection: str,
                    force: bool = False) -> int:
@@ -62,7 +62,7 @@ class Indexer:
 
         # Embed in batches
         texts   = [c.text for c in chunks]
-        vectors = _embed_batch(texts)
+        vectors = _embed_batch(texts, self._embed_model)
 
         if not vectors:
             logger.warning("[indexer] embedding failed for %s", path)
@@ -111,26 +111,26 @@ class Indexer:
 
 # ── Embedding via Ollama ──────────────────────────────────────────────────────
 
-def _embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed a list of texts using Ollama nomic-embed-text. Returns list of vectors."""
+def _embed_batch(texts: list[str], embed_model: str) -> list[list[float]]:
+    """Embed a list of texts using Ollama. Returns list of vectors."""
     vectors = []
     for i in range(0, len(texts), BATCH_SIZE):
         batch = texts[i:i + BATCH_SIZE]
-        batch_vectors = _embed_texts(batch)
+        batch_vectors = _embed_texts(batch, embed_model)
         if batch_vectors is None:
             return []
         vectors.extend(batch_vectors)
     return vectors
 
 
-def _embed_texts(texts: list[str]) -> Optional[list[list[float]]]:
+def _embed_texts(texts: list[str], embed_model: str) -> Optional[list[list[float]]]:
     """Call Ollama embedding endpoint for a batch of texts."""
     results = []
     for text in texts:
         try:
             with httpx.Client(timeout=30) as client:
                 resp = client.post(OLLAMA_EMBED_URL, json={
-                    "model":  EMBED_MODEL,
+                    "model":  embed_model,
                     "prompt": text,
                 })
                 resp.raise_for_status()

@@ -29,7 +29,7 @@ import re
 from pathlib import Path
 
 # AgentCraft installation directory (where this script lives)
-AGENTCRAFT_HOME = Path(__file__).parent.resolve()
+AGENTCRAFT_HOME = Path(__file__).resolve().parent
 if str(AGENTCRAFT_HOME) not in sys.path:
     sys.path.insert(0, str(AGENTCRAFT_HOME))
 

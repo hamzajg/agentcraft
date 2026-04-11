@@ -18,18 +18,22 @@ Each chunk stores:
 
 import pyarrow as pa
 
-# nomic-embed-text produces 768-dim vectors
-EMBEDDING_DIM = 768
+MODEL_DIMENSIONS = {
+    "nomic-embed-text": 768,
+    "mxbai-embed-large": 1024,
+}
 
-CHUNK_SCHEMA = pa.schema([
-    pa.field("vector",      pa.list_(pa.float32(), EMBEDDING_DIM)),
-    pa.field("text",        pa.string()),
-    pa.field("source_path", pa.string()),
-    pa.field("collection",  pa.string()),
-    pa.field("chunk_index", pa.int32()),
-    pa.field("language",    pa.string()),
-    pa.field("file_hash",   pa.string()),
-])
+def get_chunk_schema(embed_model: str = "nomic-embed-text") -> pa.Schema:
+    dim = MODEL_DIMENSIONS.get(embed_model, 768)
+    return pa.schema([
+        pa.field("vector",      pa.list_(pa.float32(), dim)),
+        pa.field("text",        pa.string()),
+        pa.field("source_path", pa.string()),
+        pa.field("collection",  pa.string()),
+        pa.field("chunk_index", pa.int32()),
+        pa.field("language",    pa.string()),
+        pa.field("file_hash",   pa.string()),
+    ])
 
 COLLECTIONS = ["docs", "codebase", "legacy"]
 
