@@ -1,8 +1,87 @@
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { api } from '../../lib/api'
 import { Card, CardBody, CardHeader, Badge, Button } from './ui'
 import { Avatar } from './ui/Avatar'
 
-export function MessageThread({ messages, activeAgent, onReply, onDismiss, replyText, setReplyText, sending }) {
-  const pendingMessage = messages.find(m => m.status === 'pending')
+export function MessageThread({ messages: propMessages, activeAgent, onReply, onDismiss, replyText, setReplyText, sending }) {
+  // Infinite scroll state
+  const [olderMessages, setOlderMessages] = useState([])
+  const [recentMessages, setRecentMessages] = useState([])
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const [oldestCursor, setOldestCursor] = useState(null)
+  const [userScrolledUp, setUserScrolledUp] = useState(false)
+  const containerRef = useRef(null)
+  const bottomRef = useRef(null)
+  const sentinelRef = useRef(null)
+
+  const allMessages = [...recentMessages, ...propMessages]
+  const visibleMessages = useMemo(() => allMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)), [allMessages])
+
+  const pendingMessage = visibleMessages.find(m => m.status === 'pending')
+
+  const loadRecent = async () => {
+    if (!activeAgent) return
+    try {
+      const msgs = await api.messages(activeAgent)
+      setRecentMessages(msgs)
+      if (msgs.length > 0) {
+        const oldest = msgs.reduce((min, m) => new Date(m.created_at) < new Date(min.created_at) ? m : min)
+        setOldestCursor(oldest.created_at)
+        setHasMore(true)
+      }
+    } catch (e) {
+      console.error('load recent failed', e)
+    }
+  }
+
+  const loadOlder = async () => {
+    if (loadingOlder || !hasMore || !activeAgent) return
+    setLoadingOlder(true)
+    try {
+      const older = await api.older(activeAgent, oldestCursor, 20)
+      if (older.length === 0) {
+        setHasMore(false)
+        return
+      }
+      const reversed = older.reverse()
+      setOlderMessages(prev => [...reversed, ...prev])
+      const allOlder = [...older, ...olderMessages]
+      const newOldest = allOlder.reduce((min, m) => new Date(m.created_at) < new Date(min.created_at) ? m : min)
+      setOldestCursor(newOldest.created_at)
+      setHasMore(older.length === 20)
+    } catch (e) {
+      console.error('load older failed', e)
+    } finally {
+      setLoadingOlder(false)
+    }
+  }
+
+  useEffect(() => {
+    loadRecent()
+  }, [activeAgent])
+
+  const handleScroll = useCallback((e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+    setUserScrolledUp(distanceFromBottom > 200)
+  }, [])
+
+  useEffect(() => {
+    if (!sentinelRef.current || !hasMore || loadingOlder) return
+    const observer = new IntersectionObserver(
+      ([entry]) => entry.isIntersecting && userScrolledUp && loadOlder(),
+      { root: containerRef.current, rootMargin: '200px 0px 0px 0px' }
+    )
+    observer.observe(sentinelRef.current)
+    return () => observer.disconnect()
+  }, [loadOlder, hasMore, loadingOlder, userScrolledUp])
+
+  useEffect(() => {
+    if (!userScrolledUp) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [visibleMessages.length, userScrolledUp])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -30,8 +109,18 @@ export function MessageThread({ messages, activeAgent, onReply, onDismiss, reply
         </div>
       </CardHeader>
 
-      <CardBody className="flex-1 overflow-y-auto space-y-4 p-5">
-        {messages.length === 0 ? (
+      <CardBody 
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto space-y-4 p-5">
+        {loadingOlder && (
+          <div className="flex items-center justify-center py-4">
+            <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+            <span className="ml-2 text-sm text-slate-500">Loading older...</span>
+          </div>
+        )}
+        {hasMore && userScrolledUp && <div ref={sentinelRef} className="h-1" />}
+        {visibleMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-12">
             <div className="w-16 h-16 rounded-2xl bg-slate-800 flex items-center justify-center mb-4">
               <MessageIcon className="w-8 h-8 text-slate-600" />
@@ -42,10 +131,11 @@ export function MessageThread({ messages, activeAgent, onReply, onDismiss, reply
             </p>
           </div>
         ) : (
-          messages.map((msg) => (
+          visibleMessages.map((msg) => (
             <MessageBubble key={msg.id} msg={msg} onDismiss={onDismiss} />
           ))
         )}
+        <div ref={bottomRef} />
       </CardBody>
 
       <div className="flex-shrink-0 border-t border-slate-800 p-4">

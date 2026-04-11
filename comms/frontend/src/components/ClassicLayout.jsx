@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useWebSocket } from '../hooks/useWebSocket'
+  import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../lib/api'
 import { StatusDot } from '../v2/components/ui'
+import { useMemo } from 'react'
 
 const TABS = [
   { id: 'live',    label: 'Live',    icon: LiveIcon },
@@ -23,6 +24,17 @@ export function ClassicLayout() {
   const [sending,      setSending]      = useState(false)
   const [logs,         setLogs]         = useState([])
   const bottomRef = useRef(null)
+  
+  // Infinite scroll state
+  const [olderMessages,   setOlderMessages]   = useState([])
+  const [recentMessages,  setRecentMessages]  = useState([])
+  const [loadingOlder,    setLoadingOlder]    = useState(false)
+  const [hasMore,         setHasMore]         = useState(true)
+  const [oldestCursor,    setOldestCursor]    = useState(null)
+  const [userScrolledUp,  setUserScrolledUp]  = useState(false)
+  
+  const containerRef = useRef(null)
+  const sentinelRef  = useRef(null)
 
   const handleWsEvent = useCallback((ev) => {
     const { event, payload } = ev
@@ -135,29 +147,93 @@ export function ClassicLayout() {
     setTab('chat')
   }
 
-  const loadAgentHistory = async (agentId) => {
+  const loadRecent = async (agentId) => {
     if (!agentId) return
     try {
       const msgs = await api.messages(agentId)
-      setMessages(prev => ({ ...prev, [agentId]: msgs }))
+      setRecentMessages(msgs)
+      if (msgs.length > 0) {
+        const oldest = msgs.reduce((min, m) => new Date(m.created_at) < new Date(min.created_at) ? m : min)
+        setOldestCursor(oldest.created_at)
+        setHasMore(msgs.length === 50) // assume limit 50
+      }
     } catch (e) {
-      console.error('failed to load agent history', e)
+      console.error('failed to load recent history', e)
     }
+  }
+
+  const loadOlder = async () => {
+    if (loadingOlder || !hasMore || !activeId) return
+    setLoadingOlder(true)
+    try {
+      const older = await api.older(activeId, oldestCursor, 20)
+      if (older.length === 0) {
+        setHasMore(false)
+        return
+      }
+      const reversed = older.reverse()
+      setOlderMessages(prev => [...reversed, ...prev])
+      const allOlder = [...older, ...olderMessages]
+      const newOldest = allOlder.reduce((min, m) => new Date(m.created_at) < new Date(min.created_at) ? m : min)
+      setOldestCursor(newOldest.created_at)
+      setHasMore(older.length === 20)
+    } catch (e) {
+      console.error('load older failed', e)
+    } finally {
+      setLoadingOlder(false)
+    }
+  }
+
+  const loadAgentHistory = async (agentId) => {
+    await loadRecent(agentId)
   }
 
   useEffect(() => {
     if (!activeId) return
-    if (!messages[activeId] || messages[activeId].length === 0) {
-      loadAgentHistory(activeId)
-    }
+    loadAgentHistory(activeId)
   }, [activeId])
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, activeId])
+  // Handle scroll position - detect if user scrolled up
+  const handleScroll = useCallback((e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+    setUserScrolledUp(distanceFromBottom > 200)
+  }, [])
 
-  const activeMsgs    = activeId ? (messages[activeId] ?? []) : []
-  const pendingMsg    = activeMsgs.find(m => m.status === 'pending') ?? null
+  // Load more observer
+  useEffect(() => {
+    if (!sentinelRef.current || !hasMore || loadingOlder) return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && userScrolledUp) {
+          loadOlder()
+        }
+      },
+      { 
+        root: containerRef.current, 
+        rootMargin: '200px 0px 0px 0px',
+        threshold: 0
+      }
+    )
+    observer.observe(sentinelRef.current)
+    return () => observer.disconnect()
+  }, [loadOlder, hasMore, loadingOlder, userScrolledUp, containerRef])
+
+  // Auto-scroll only if near bottom
+  useEffect(() => {
+    if (!userScrolledUp) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [recentMessages.length, olderMessages.length])
+
+  // Combine old + recent messages
+  const visibleMessages = useMemo(() => {
+    const all = [...olderMessages, ...recentMessages]
+    return all.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+  }, [olderMessages, recentMessages])
+
+  const activeMsgs    = visibleMessages
+  const pendingMsg    = visibleMessages.find(m => m.status === 'pending') ?? null
   const activeChannel = channels.find(c => c.agent_id === activeId)
 
   const handleSend = async (text) => {
@@ -176,9 +252,7 @@ export function ClassicLayout() {
     }))
   }
 
-  const sorted = [...activeMsgs].sort(
-    (a, b) => new Date(a.created_at) - new Date(b.created_at)
-  )
+
 
   const TabContent = () => {
     switch (tab) {
@@ -291,8 +365,20 @@ export function ClassicLayout() {
             ) : sorted.length === 0 ? (
               <NoMessages agentLabel={activeChannel?.agent_label ?? activeId} />
             ) : (
-              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-                {sorted.map(msg => (
+              <div 
+                ref={containerRef}
+                onScroll={handleScroll}
+                className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+                {loadingOlder && (
+                  <div className="flex items-center justify-center py-4">
+                    <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                    <span className="ml-2 text-sm text-muted">Loading older messages...</span>
+                  </div>
+                )}
+                {hasMore && userScrolledUp && (
+                  <div ref={sentinelRef} className="h-1 opacity-0" />
+                )}
+                {visibleMessages.map(msg => (
                   <div key={msg.id} className="space-y-2">
                     <AgentBubble
                       msg={msg}
