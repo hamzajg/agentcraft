@@ -614,6 +614,23 @@ def cmd_bootstrap(args):
     ws = _load_ws()
     _require_yaml(bootstrap_parser)
 
+    if getattr(args, "clean", False):
+        ws_root = _find_workspace_root()
+        if ws_root:
+            import shutil
+            ai_dir = ws_root / ".ai"
+            if ai_dir.exists():
+                shutil.rmtree(ai_dir, ignore_errors=True)
+                print(f"  ✓ Cleaned {ai_dir}")
+            docs_dir = ws_root / "docs"
+            if docs_dir.exists():
+                for item in docs_dir.iterdir():
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+                print(f"  ✓ Cleaned {docs_dir}")
+
     # Auto-detect checkpoint unless user overrides
     checkpoint = getattr(args, "from_iter", None)
     if checkpoint is not None and checkpoint > 1:
@@ -1124,6 +1141,7 @@ def main():
     p.add_argument("--max-rework-task", type=int, default=None)
     p.add_argument("--max-rework-iter", type=int, default=None)
     p.add_argument("--parallel",        action="store_true", help="Run agents in parallel (experimental)")
+    p.add_argument("--clean",           action="store_true", help="Clean up old execution (.ai/ and docs/ content)")
     p.set_defaults(func=cmd_bootstrap)
 
     # ── resume ────────────────────────────────────────────────────────────────
