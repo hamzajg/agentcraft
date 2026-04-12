@@ -363,7 +363,7 @@ export function ClassicLayout() {
 
             {!activeId ? (
               <NoChannel />
-            ) : sorted.length === 0 ? (
+            ) : visibleMessages.length === 0 ? (
               <NoMessages agentLabel={activeChannel?.agent_label ?? activeId} />
             ) : (
               <div 

@@ -41,6 +41,22 @@ except ImportError:
     subprocess.run([sys.executable, "-m", "pip", "install", "pyyaml", "-q"], check=True)
     import yaml
 
+# Try to import dotenv, install if needed
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    import subprocess
+    subprocess.run([sys.executable, "-m", "pip", "install", "python-dotenv", "-q"], check=True)
+    from dotenv import load_dotenv
+
+# Automatically load environment variables from a .env file if it exists
+load_dotenv()
+
+# Map OLLAMA_API_BASE to OLLAMA_HOST so the native ollama CLI correctly resolves remote bindings
+_api_base = os.getenv("OLLAMA_API_BASE")
+if _api_base and not os.getenv("OLLAMA_HOST"):
+    os.environ["OLLAMA_HOST"] = _api_base
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -90,6 +106,46 @@ def _require_yaml(parser):
             "workspace.yaml not found.\n"
             "  Run: agentcraft init   to create a workspace."
         )
+
+
+def _check_ollama():
+    """Verify Ollama native CLI and API endpoint are accessible."""
+    import shutil
+    import os
+    import sys
+    if not shutil.which("ollama"):
+        print("  ✗ Ollama CLI not found — please install it")
+        sys.exit(1)
+        
+    api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+    
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"{api_base}/api/tags")
+        with urllib.request.urlopen(req, timeout=3) as _:
+            pass
+    except Exception as e:
+        print(f"  ✗ Ollama unreachable at {api_base}")
+        print("    Violation: Missing environment variables or Ollama is offline.")
+        print("    Check your .env file or run 'ollama serve'")
+        print(f"    Error details: {e}")
+        sys.exit(1)
+
+
+def _log_env_info():
+    """Print the contents of the loaded .env file, masking secrets."""
+    try:
+        from dotenv import find_dotenv, dotenv_values
+        env_file = find_dotenv()
+        if env_file:
+            print(f"  ✓ Environment: Loaded from {env_file}")
+            values = dotenv_values(env_file)
+            for k, v in values.items():
+                if v and any(x in k.lower() for x in ("key", "secret", "token", "pass")):
+                    v = v[:4] + "***" + (v[-2:] if len(v) > 6 else "")
+                print(f"    - {k}: {v}")
+    except ImportError:
+        pass
 
 
 # ── init ──────────────────────────────────────────────────────────────────────
@@ -317,9 +373,7 @@ def cmd_build(args):
         print(f"  — Validation skipped (--no-validate)")
 
     # ── 4. Pull models ──────────────────────────────────────────────────
-    if not shutil.which("ollama"):
-        print(f"  ✗ Ollama not found — install it first")
-        sys.exit(1)
+    _check_ollama()
 
     import subprocess
     models_to_pull = [model]
@@ -449,6 +503,8 @@ def _run_workflow(args, start_from_iteration: int):
 
     ws = _load_ws()
     _require_yaml(bootstrap_parser)
+    _check_ollama()
+    _log_env_info()
 
     team     = ws.get("agent_team", {})
     paths    = ws.get("paths", {})
