@@ -137,18 +137,24 @@ class TestDevAgent(AiderAgent):
         return {"severity": "critical", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
 
     def _looks_like_hallucination(self, content: str) -> bool:
-        import re
         if not content or len(content.strip()) < 20:
             return True
         lines = content.splitlines()
-        placeholder_patterns = [r"TODO", r"placeholder", r"stub", r"fill.*in", r"coming soon",
-                                r"auto-generat", r"skipped", r"incomplete", r"not (yet|currently) (implemented|available|generated)", r"_.*_"]
-        placeholder_lines = sum(1 for line in lines for p in placeholder_patterns if re.search(p, line, re.IGNORECASE))
+        # Only match explicit placeholder/hallucination text
+        placeholder_patterns = [
+            r"TODO", r"PLACEHOLDER", r"STUB", r"fill.?in", r"coming soon",
+            r"auto-generat", r"skipped\b", r"incomplete\b",
+            r"not (yet|currently) (implemented|available|generated)",
+        ]
+        placeholder_lines = sum(
+            1 for line in lines for p in placeholder_patterns
+            if re.search(p, line, re.IGNORECASE)
+        )
         if len(lines) > 3 and placeholder_lines / len(lines) > 0.4:
             return True
         if len(content.strip()) < 100:
             return True
-        if all(line.startswith("#") or line.startswith("//") or line.strip() == "" for line in lines):
+        if all(line.lstrip().startswith(("#", "//", "/*", "*", "*/")) or line.strip() == "" for line in lines if line.strip()):
             return True
         return False
 

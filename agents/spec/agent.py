@@ -248,9 +248,8 @@ class SpecAgent(AiderAgent):
         # Check for placeholder/TODO density
         placeholder_patterns = [
             r"TODO", r"placeholder", r"stub", r"fill.*in", r"coming soon",
-            r"auto-generat", r"skipped", r"incomplete", r"abort",
+            r"auto-generat", r"skipped\b", r"incomplete\b", r"abort\b",
             r"not (yet|currently) (implemented|available|generated)",
-            r"_.*_",  # Markdown italics as placeholders (e.g. _Architect fills this_)
         ]
         placeholder_lines = 0
         for line in lines:

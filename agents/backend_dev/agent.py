@@ -4,6 +4,7 @@ Follows the same smart failure classification + auto-retry pattern as all agents
 """
 
 import logging
+import re
 from pathlib import Path
 from core.base import AiderAgent
 
@@ -21,6 +22,34 @@ def _ensure_file(path: Path) -> Path:
 
 def _file_has_content(path: Path) -> bool:
     return path.exists() and path.stat().st_size > 0
+
+
+def _detect_language(file_path: str) -> str:
+    """Detect programming language from file path/extension."""
+    ext = Path(file_path).suffix.lower()
+    ext_map = {
+        '.py': 'Python', '.js': 'JavaScript', '.ts': 'TypeScript',
+        '.java': 'Java', '.kt': 'Kotlin', '.scala': 'Scala',
+        '.go': 'Go', '.rs': 'Rust', '.c': 'C', '.cpp': 'C++', '.h': 'C Header',
+        '.cs': 'C#', '.rb': 'Ruby', '.php': 'PHP', '.swift': 'Swift',
+        '.r': 'R', '.dart': 'Dart', '.ex': 'Elixir', '.exs': 'Elixir',
+        '.erl': 'Erlang', '.hs': 'Haskell', '.lua': 'Lua', '.pl': 'Perl',
+        '.sh': 'Shell', '.bash': 'Bash', '.zsh': 'Zsh',
+        '.yaml': 'YAML', '.yml': 'YAML', '.json': 'JSON', '.toml': 'TOML',
+        '.xml': 'XML', '.html': 'HTML', '.css': 'CSS', '.scss': 'SCSS',
+        '.sql': 'SQL', '.md': 'Markdown', '.txt': 'Text',
+    }
+    return ext_map.get(ext, '')
+
+
+def _read_requirements(workspace: Path) -> str:
+    """Read requirements/docs for context."""
+    docs_dir = workspace / "docs"
+    parts = []
+    for f in sorted(docs_dir.glob("*.md")):
+        content = f.read_text()
+        parts.append(f"## {f.name}\n{content[:1500]}")
+    return "\n\n".join(parts) if parts else ""
 
 
 class BackendDevAgent(AiderAgent):
@@ -108,42 +137,44 @@ class BackendDevAgent(AiderAgent):
     def _classify_failure(self, result: dict, output_path: Path, label: str) -> dict:
         exit_code = result.get("exit_code", -1)
         stderr = result.get("stderr", "")
-        # Skip reading if path is a directory or doesn't exist
         content = ""
         if output_path.exists() and output_path.is_file():
             content = output_path.read_text()
 
-        # Transient (crash, timeout)
         if exit_code != 0 and (exit_code == -1 or "timeout" in stderr.lower() or exit_code >= 128):
             return {"severity": "transient", "auto_retry": True, "needs_user_input": False, "escalated_message": ""}
 
-        # Hallucination
         if _file_has_content(output_path) and self._looks_like_hallucination(content):
             return {"severity": "hallucination", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
 
-        # Refusal
         if exit_code == 0 and not _file_has_content(output_path):
             return {
                 "severity": "refusal", "auto_retry": True, "needs_user_input": False,
                 "escalated_message": "CRITICAL: You MUST write the complete file content. No placeholders or stubs.",
             }
 
-        # Critical
         return {"severity": "critical", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
 
     def _looks_like_hallucination(self, content: str) -> bool:
         if not content or len(content.strip()) < 20:
             return True
         lines = content.splitlines()
-        placeholder_patterns = [r"TODO", r"placeholder", r"stub", r"fill.*in", r"coming soon",
-                                r"auto-generat", r"skipped", r"incomplete", r"not (yet|currently) (implemented|available|generated)",
-                                r"_.*_"]
-        placeholder_lines = sum(1 for line in lines for p in placeholder_patterns if __import__("re").search(p, line, __import__("re").IGNORECASE))
+        # Only match explicit placeholder/hallucination text
+        placeholder_patterns = [
+            r"TODO", r"PLACEHOLDER", r"STUB", r"fill.?in", r"coming soon",
+            r"auto-generat", r"skipped\b", r"incomplete\b",
+            r"not (yet|currently) (implemented|available|generated)",
+        ]
+        placeholder_lines = sum(
+            1 for line in lines for p in placeholder_patterns
+            if re.search(p, line, re.IGNORECASE)
+        )
         if len(lines) > 3 and placeholder_lines / len(lines) > 0.4:
             return True
         if len(content.strip()) < 100:
             return True
-        if all(line.startswith("#") or line.startswith("//") or line.strip() == "" for line in lines):
+        # Only-all-comments is suspicious
+        if all(line.lstrip().startswith(("#", "//", "/*", "*", "*/")) or line.strip() == "" for line in lines if line.strip()):
             return True
         return False
 
@@ -154,13 +185,34 @@ class BackendDevAgent(AiderAgent):
         context_files = [self.workspace / f for f in task.get("context_files", []) if (self.workspace / f).exists()]
         read_files = list(docs_dir.glob("*.md")) + context_files
 
+        # Build rich context
+        lang = _detect_language(task["file"])
+        requirements = _read_requirements(self.workspace)
+
         criteria = "\n".join(f"- {c}" for c in task.get("acceptance_criteria", []))
+
         message = (
-            f"Create file: {task['file']}\n\n"
-            f"Task: {task['description']}\n\n"
-            + (f"Must satisfy:\n{criteria}\n\n" if criteria else "")
-            + "Output the complete file only. No explanation."
+            f"Write the COMPLETE source code for: {task['file']}\n\n"
+            f"## Language: {lang}\n\n"
+            f"## Task Description\n{task['description']}\n\n"
         )
+        if requirements:
+            message += f"## Project Requirements\n{requirements}\n\n"
+        if criteria:
+            message += f"## Acceptance Criteria\n{criteria}\n\n"
+
+        message += (
+            "## Rules\n"
+            "1. Output the FULL, COMPLETE file — no placeholders, no stubs, no 'TODO'\n"
+            "2. Include all imports, class definitions, and the main entry point\n"
+            "3. Use idiomatic patterns for the language\n"
+            "4. If this is a CLI app, include argument parsing\n"
+            "5. Handle errors gracefully\n"
+            "6. The file must be compilable/runnable as-is\n"
+            "7. Do NOT output partial code or say 'rest of file here'\n\n"
+            "Output ONLY the file content. No explanation before or after."
+        )
+
         logger.info("[backend_dev] implementing: %s", task["file"])
         result = self._run_step(message, read_files, target_file, f"implement {task['file']}", timeout=150)
 
@@ -176,7 +228,7 @@ class BackendDevAgent(AiderAgent):
                     target_file.write_text(f"# {task['file']}\n// Auto-generation skipped.\n")
                     result["success"] = True
             elif result.get("auto_retry"):
-                pass  # Already auto-retried
+                pass
         return result
 
     def _ask_user_retry(self, step_label: str, error_detail: str, severity: str) -> str:
