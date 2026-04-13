@@ -7,10 +7,11 @@ import { useWebSocket } from '../../hooks/useWebSocket'
 import { api } from '../../lib/api'
 
 /* ─── Fluent UI v2 Workspace Layout ───
-   Chat-centric responsive 3-panel design:
+   Two-view design:
    Left  : File Explorer (collapsible, 260px)
-   Center: Active workspace / file viewer / Agent Build Stage (flexible)
-   Right : Agent Chat Panel (380px, primary focus)
+   Center: File Viewer / Empty State (main view)
+   Right : Agent Chat Panel (380px)
+   Overlay: Agent Build Stage (slides in from right, dismissible)
    Bottom: Activity feed (minimizable)
 */
 
@@ -20,29 +21,31 @@ export function WorkspaceLayout() {
   const [activityMinimized, setActivityMinimized] = useState(true)
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
 
-  // Agent Build Stage state
+  // Agent Build Stage — collapsible overlay panel
   const [agentBuildReport, setAgentBuildReport] = useState(null)
-  const [buildStageLoading, setBuildStageLoading] = useState(true)
+  const [showBuildPanel, setShowBuildPanel] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState(null)
 
   // Poll for agent build report until data arrives
   useEffect(() => {
     let cancelled = false
-    setBuildStageLoading(true)
+    let attempts = 0
+    const maxAttempts = 15
     const poll = async () => {
+      if (cancelled) return
+      attempts++
       try {
         const data = await api.agentBuildReport()
-        if (!cancelled && data && data.agents && Object.keys(data.agents).length > 0) {
-          setAgentBuildReport(data.agents)
-          setBuildStageLoading(false)
-          return // Stop polling once we have data
+        if (data && data.agents && Object.keys(data.agents).length > 0) {
+          if (!cancelled) {
+            setAgentBuildReport(data.agents)
+            setShowBuildPanel(true) // Auto-open on first receipt
+          }
+          return
         }
-      } catch (e) {
-        // Ignore errors, keep polling
-      }
-      if (!cancelled) {
-        setTimeout(poll, 2000) // Retry every 2s
-      }
+      } catch (e) { /* ignore */ }
+      if (attempts >= maxAttempts) { if (!cancelled) setAgentBuildReport(null); return }
+      if (!cancelled) setTimeout(poll, 2000)
     }
     poll()
     return () => { cancelled = true }
@@ -433,49 +436,42 @@ export function WorkspaceLayout() {
         buildState={buildState}
         onToggleLeftPanel={() => setLeftPanelCollapsed(p => !p)}
         leftPanelCollapsed={leftPanelCollapsed}
+        hasBuildReport={!!agentBuildReport}
+        showBuildPanel={showBuildPanel}
+        onToggleBuildPanel={() => setShowBuildPanel(p => !p)}
       />
 
       {/* ─── Main Content Area ─── */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Panel — File Explorer */}
         <div
-          className={`flex-shrink-0 border-r border-fluent-borderSubtle bg-fluent-surface transition-all duration-200 ease-ease overflow-hidden ${
+          className={`flex-shrink-0 border-r border-fluent-borderSubtle bg-fluent-surface transition-all duration-200 overflow-hidden ${
             leftPanelCollapsed ? 'w-0 border-r-0' : 'w-[260px]'
           }`}
         >
           <FileExplorer onFileSelect={handleFileSelect} />
         </div>
 
-        {/* Center — Workspace / File Viewer / Agent Build Stage */}
-        <div className="flex-1 min-w-0 overflow-hidden bg-fluent-bg">
-          {selectedAgent && agentBuildReport ? (
-            <AgentDetailCard
-              agentId={selectedAgent}
-              agent={agentBuildReport[selectedAgent]}
-              onClose={() => setSelectedAgent(null)}
-            />
-          ) : agentBuildReport ? (
-            <AgentBuildStage
-              agents={agentBuildReport}
-              onSelectAgent={setSelectedAgent}
-              onDismiss={() => { setAgentBuildReport(null); setSelectedAgent(null); }}
-            />
-          ) : buildStageLoading ? (
-            <div className="h-full flex flex-col items-center justify-center text-fluent-textTert animate-fade-in">
-              <div className="w-16 h-16 mb-4 rounded-fluent-xl bg-fluent-card border border-fluent-border flex items-center justify-center">
-                <div className="w-8 h-8 border-2 border-fluent-accent border-t-transparent rounded-full animate-spin" />
-              </div>
-              <h3 className="text-base font-medium text-fluent-textSec mb-1">Agent Build Stage</h3>
-              <p className="text-xs text-fluent-textTert">Preparing agents...</p>
-            </div>
-          ) : showFileViewer && selectedFile ? (
+        {/* Center — File Viewer (main view) + Agent Build Overlay */}
+        <div className="flex-1 min-w-0 overflow-hidden bg-fluent-bg relative">
+          {selectedFile && showFileViewer ? (
             <FileViewer file={selectedFile} onClose={handleCloseFile} />
           ) : (
             <FluentEmptyState onFileClick={() => setLeftPanelCollapsed(false)} />
           )}
+
+          {/* Agent Build Stage — Slide-in overlay panel */}
+          {showBuildPanel && agentBuildReport && (
+            <AgentBuildOverlay
+              agents={agentBuildReport}
+              selectedAgent={selectedAgent}
+              onSelectAgent={setSelectedAgent}
+              onClose={() => { setShowBuildPanel(false); setSelectedAgent(null); }}
+            />
+          )}
         </div>
 
-        {/* Right Panel — Agent Chat (primary focus) */}
+        {/* Right Panel — Agent Chat */}
         <div className="w-[380px] min-w-[320px] max-w-[480px] flex-shrink-0 overflow-hidden border-l border-fluent-borderSubtle bg-fluent-surface">
           <AgentPanel
             channels={channels}
@@ -505,7 +501,7 @@ export function WorkspaceLayout() {
    TopBar — Fluent UI styled header
    ═══════════════════════════════════════════ */
 
-function TopBar({ connected, pendingCount, agentCount, statuses, buildState, onToggleLeftPanel, leftPanelCollapsed }) {
+function TopBar({ connected, pendingCount, agentCount, statuses, buildState, onToggleLeftPanel, leftPanelCollapsed, hasBuildReport, showBuildPanel, onToggleBuildPanel }) {
   const activeAgents = Object.entries(statuses).filter(([, s]) => s === 'running').length
   const blockedAgents = Object.entries(statuses).filter(([, s]) => s === 'blocked').length
 
@@ -585,6 +581,25 @@ function TopBar({ connected, pendingCount, agentCount, statuses, buildState, onT
             </span>
           )}
         </div>
+      )}
+
+      {/* Agent Build Stage toggle */}
+      {hasBuildReport && (
+        <button
+          onClick={onToggleBuildPanel}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-fluent-lg text-xs font-medium transition-all duration-200 flex-shrink-0 ${
+            showBuildPanel
+              ? 'bg-fluent-accentSubtle border border-fluent-accentBorder text-fluent-accent'
+              : 'bg-fluent-card border border-fluent-borderSubtle text-fluent-textSec hover:text-fluent-text hover:bg-fluent-cardHover'
+          }`}
+          title="Toggle Agent Build Stage"
+        >
+          <span>🤖</span>
+          Agents
+          {!showBuildPanel && (
+            <span className="w-1.5 h-1.5 rounded-full bg-fluent-accent animate-pulse" />
+          )}
+        </button>
       )}
 
       {/* Pending replies badge */}
@@ -675,219 +690,153 @@ function FluentEmptyState({ onFileClick }) {
 }
 
 /* ═══════════════════════════════════════════════════════
-   Agent Build Stage — Canvas showing agent bots
+   Agent Build Overlay — Slide-in panel from right
    ═══════════════════════════════════════════════════════ */
 
-const AGENT_INFO = {
-  supervisor:       { role: 'Orchestrator',       color: 'bg-violet',     bg: 'bg-violet/10',      border: 'border-violet/30',     icon: '👑', desc: 'Coordinates all agents, delegates tasks, reports progress to user' },
-  architect:        { role: 'Architect',           color: 'bg-blue-400',   bg: 'bg-blue-400/10',    border: 'border-blue-400/30',   icon: '🏗️', desc: 'Analyzes requirements, designs system architecture, plans iterations' },
-  planner:          { role: 'Planner',             color: 'bg-amber',      bg: 'bg-amber/10',       border: 'border-amber/30',      icon: '📋', desc: 'Decomposes iterations into file-level tasks, assigns agents' },
-  backend_dev:      { role: 'Backend Dev',         color: 'bg-emerald',    bg: 'bg-emerald/10',     border: 'border-emerald/30',    icon: '⚙️', desc: 'Implements source code — any language, framework, or type' },
-  test_dev:         { role: 'Test Dev',            color: 'bg-cyan-400',   bg: 'bg-cyan-400/10',    border: 'border-cyan-400/30',   icon: '🧪', desc: 'Writes unit and integration tests following TDD principles' },
-  reviewer:         { role: 'Reviewer',            color: 'bg-rose',       bg: 'bg-rose/10',        border: 'border-rose/30',       icon: '🔍', desc: 'Reviews code for correctness, intent matching, and simplicity' },
-  integration_test: { role: 'Integration Test',    color: 'bg-teal',       bg: 'bg-teal/10',        border: 'border-teal/30',       icon: '🔗', desc: 'Writes integration and E2E tests that verify components work together' },
-  config_agent:     { role: 'Config',              color: 'bg-sky',        bg: 'bg-sky/10',         border: 'border-sky/30',        icon: '⚡', desc: 'Creates configuration files (JSON, YAML, TOML, env, etc.)' },
-  docs_agent:       { role: 'Docs',                color: 'bg-indigo',     bg: 'bg-indigo/10',      border: 'border-indigo/30',     icon: '📝', desc: 'Writes documentation — README, API docs, usage guides' },
-  cicd:             { role: 'CI/CD',               color: 'bg-orange',     bg: 'bg-orange/10',      border: 'border-orange/30',     icon: '🚀', desc: 'Sets up CI/CD pipelines, Docker, deployment infrastructure' },
-  spec_agent:       { role: 'Spec',                color: 'bg-pink',       bg: 'bg-pink/10',        border: 'border-pink/30',       icon: '📐', desc: 'Writes technical specifications from project requirements' },
+const AGENT_META = {
+  supervisor:       { role: 'Orchestrator',       icon: '👑', desc: 'Coordinates all agents, delegates tasks, reports progress to user', bg: 'bg-violet/10', border: 'border-violet/30' },
+  architect:        { role: 'Architect',           icon: '🏗️', desc: 'Analyzes requirements, designs system architecture, plans iterations', bg: 'bg-blue-400/10', border: 'border-blue-400/30' },
+  planner:          { role: 'Planner',             icon: '📋', desc: 'Decomposes iterations into file-level tasks, assigns agents', bg: 'bg-amber/10', border: 'border-amber/30' },
+  backend_dev:      { role: 'Backend Dev',         icon: '⚙️', desc: 'Implements source code — any language, framework, or type', bg: 'bg-emerald/10', border: 'border-emerald/30' },
+  test_dev:         { role: 'Test Dev',            icon: '🧪', desc: 'Writes unit and integration tests following TDD principles', bg: 'bg-cyan-400/10', border: 'border-cyan-400/30' },
+  reviewer:         { role: 'Reviewer',            icon: '🔍', desc: 'Reviews code for correctness, intent matching, and simplicity', bg: 'bg-rose/10', border: 'border-rose/30' },
+  integration_test: { role: 'Integration Test',    icon: '🔗', desc: 'Writes integration and E2E tests that verify components work together', bg: 'bg-teal/10', border: 'border-teal/30' },
+  config_agent:     { role: 'Config',              icon: '⚡', desc: 'Creates configuration files (JSON, YAML, TOML, env, etc.)', bg: 'bg-sky/10', border: 'border-sky/30' },
+  docs_agent:       { role: 'Docs',                icon: '📝', desc: 'Writes documentation — README, API docs, usage guides', bg: 'bg-indigo/10', border: 'border-indigo/30' },
+  cicd:             { role: 'CI/CD',               icon: '🚀', desc: 'Sets up CI/CD pipelines, Docker, deployment infrastructure', bg: 'bg-orange/10', border: 'border-orange/30' },
+  spec_agent:       { role: 'Spec',                icon: '📐', desc: 'Writes technical specifications from project requirements', bg: 'bg-pink/10', border: 'border-pink/30' },
 }
 
-function AgentBuildStage({ agents, onSelectAgent, onDismiss }) {
-  const agentEntries = Object.entries(agents)
-  const readyCount = agentEntries.length
+function AgentBuildOverlay({ agents, selectedAgent, onSelectAgent, onClose }) {
+  const entries = Object.entries(agents)
 
   return (
-    <div className="h-full flex flex-col bg-fluent-bg overflow-hidden animate-fade-in">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-fluent-borderSubtle flex items-center justify-between flex-shrink-0">
-        <div>
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-fluent-lg bg-fluent-accentSubtle border border-fluent-accentBorder flex items-center justify-center">
-              <span className="text-sm">🤖</span>
-            </div>
+    <div className="absolute inset-0 z-30 flex justify-end">
+      {/* Backdrop — click to close */}
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
+
+      {/* Panel */}
+      <div className="relative w-[520px] max-w-full h-full bg-fluent-surface border-l border-fluent-borderSubtle shadow-fluent-flyout flex flex-col animate-slide-right">
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-fluent-borderSubtle flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-fluent-lg bg-fluent-accentSubtle border border-fluent-accentBorder flex items-center justify-center text-base">🤖</div>
             <div>
-              <h2 className="text-lg font-semibold text-fluent-text">Agent Build Stage</h2>
-              <p className="text-xs text-fluent-textTert">{readyCount} agents prepared and ready</p>
+              <h2 className="text-sm font-semibold text-fluent-text">Agent Build Stage</h2>
+              <p className="text-[11px] text-fluent-textTert">{entries.length} agents ready</p>
             </div>
           </div>
+          <button onClick={onClose}
+            className="p-1.5 rounded-fluent-md hover:bg-fluent-card text-fluent-textTert hover:text-fluent-textSec transition-colors">
+            <CloseIcon />
+          </button>
         </div>
-        <button onClick={onDismiss}
-          className="p-2 rounded-fluent-md hover:bg-fluent-card text-fluent-textTert hover:text-fluent-textSec transition-colors"
-          title="Dismiss">
-          <CloseIcon />
-        </button>
-      </div>
 
-      {/* Agent Grid */}
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 max-w-6xl mx-auto">
-          {agentEntries.map(([id, info]) => {
-            const meta = AGENT_INFO[id] || { role: id, color: 'bg-zinc-400', bg: 'bg-zinc-400/10', border: 'border-zinc-400/30', icon: '🤖', desc: 'Agent' }
-            return (
-              <AgentBotCard
-                key={id}
-                id={id}
-                info={info}
-                meta={meta}
-                onClick={() => onSelectAgent(id)}
-              />
-            )
-          })}
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {selectedAgent ? (
+            /* ── Detail View ── */
+            <AgentAgentDetail
+              agentId={selectedAgent}
+              agent={agents[selectedAgent]}
+              onBack={() => onSelectAgent(null)}
+            />
+          ) : (
+            /* ── Grid View ── */
+            <div className="grid grid-cols-2 gap-3">
+              {entries.map(([id, info]) => {
+                const meta = AGENT_META[id] || { role: id, icon: '🤖', desc: 'Agent', bg: 'bg-zinc-400/10', border: 'border-zinc-400/30' }
+                return (
+                  <button key={id} onClick={() => onSelectAgent(id)}
+                    className={`flex flex-col items-start p-3.5 rounded-fluent-xl border transition-all duration-150 text-left
+                      ${meta.bg} ${meta.border} hover:shadow-fluent-elevated hover:scale-[1.02] active:scale-[0.97]`}>
+                    <div className={`w-10 h-10 rounded-fluent-lg ${meta.bg} border ${meta.border} flex items-center justify-center text-lg mb-2.5 transition-transform group-hover:scale-110`}>
+                      {meta.icon}
+                    </div>
+                    <p className="text-sm font-semibold text-fluent-text">{info.label || meta.role}</p>
+                    <p className="text-[11px] text-fluent-textTert mt-0.5">{meta.role}</p>
+                    {info.skills?.length > 0 && (
+                      <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-fluent-accentSubtle text-fluent-accent">
+                        {info.skills.length} skill{info.skills.length > 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
   )
 }
 
-function AgentBotCard({ id, info, meta, onClick }) {
-  const [hovered, setHovered] = useState(false)
+function AgentAgentDetail({ agentId, agent, onBack }) {
+  const meta = AGENT_META[agentId] || { role: agentId, icon: '🤖', desc: 'Agent', bg: 'bg-zinc-400/10', border: 'border-zinc-400/30' }
 
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      className={`relative group flex flex-col items-start p-4 rounded-fluent-xl border transition-all duration-200 text-left
-        ${meta.bg} ${meta.border} hover:shadow-fluent-elevated hover:scale-[1.02] active:scale-[0.98] animate-scale-in`}
-    >
-      {/* Bot avatar */}
-      <div className={`w-12 h-12 rounded-fluent-lg ${meta.bg} border ${meta.border} flex items-center justify-center text-xl mb-3 transition-transform duration-200 group-hover:scale-110`}>
-        {meta.icon}
+    <div className="space-y-4 animate-fade-in">
+      {/* Back button */}
+      <button onClick={onBack}
+        className="flex items-center gap-1.5 text-sm text-fluent-textSec hover:text-fluent-text px-1 py-1 rounded-fluent-md hover:bg-fluent-card transition-colors">
+        <ChevronLeftIcon />Back
+      </button>
+
+      {/* Avatar + Name */}
+      <div className="flex items-center gap-3">
+        <div className={`w-14 h-14 rounded-fluent-xl ${meta.bg} border ${meta.border} flex items-center justify-center text-2xl`}>
+          {meta.icon}
+        </div>
+        <div>
+          <h3 className="text-base font-bold text-fluent-text">{agent.label}</h3>
+          <p className="text-xs text-fluent-textTert">{meta.role}</p>
+        </div>
       </div>
 
-      {/* Name */}
-      <p className="text-sm font-semibold text-fluent-text">{info.label || meta.role}</p>
-
-      {/* Role */}
-      <p className="text-xs text-fluent-textTert mt-0.5">{meta.role}</p>
-
-      {/* Skills count */}
-      {info.skills?.length > 0 && (
-        <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-fluent-accentSubtle text-fluent-accent">
-          {info.skills.length} skill{info.skills.length > 1 ? 's' : ''}
-        </span>
-      )}
-
-      {/* Hover tooltip */}
-      {hovered && (
-        <div className="absolute -bottom-16 left-1/2 -translate-x-1/2 z-50 w-64 animate-slide-up">
-          <div className="bg-fluent-card border border-fluent-border rounded-fluent-lg p-3 shadow-fluent-flyout">
-            <div className="flex items-center gap-2 mb-1">
-              <span>{meta.icon}</span>
-              <span className="text-xs font-semibold text-fluent-text">{info.label}</span>
-            </div>
-            <p className="text-[11px] text-fluent-textSec leading-snug">{meta.desc}</p>
-            <div className="mt-2 pt-2 border-t border-fluent-borderSubtle flex items-center justify-between">
-              <span className="text-[10px] text-fluent-textTert">Prompt: {info.prompt_size_bytes}B</span>
-              <span className="text-[10px] text-fluent-textTert">Click for details →</span>
-            </div>
-          </div>
-        </div>
-      )}
-    </button>
-  )
-}
-
-/* ═══════════════════════════════════════════════════════
-   Agent Detail Card — Full details on click
-   ═══════════════════════════════════════════════════════ */
-
-function AgentDetailCard({ agentId, agent, onClose }) {
-  const meta = AGENT_INFO[agentId] || { role: agentId, color: 'bg-zinc-400', bg: 'bg-zinc-400/10', border: 'border-zinc-400/30', icon: '🤖', desc: 'Agent' }
-
-  return (
-    <div className="h-full flex flex-col bg-fluent-bg overflow-hidden animate-fade-in">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-fluent-borderSubtle flex items-center justify-between flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <button onClick={onClose}
-            className="p-1.5 rounded-fluent-md hover:bg-fluent-card text-fluent-textTert hover:text-fluent-textSec transition-colors">
-            <ChevronLeftIcon />
-          </button>
-          <div className={`w-10 h-10 rounded-fluent-lg ${meta.bg} border ${meta.border} flex items-center justify-center text-xl`}>
-            {meta.icon}
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-fluent-text">{agent.label}</h2>
-            <p className="text-xs text-fluent-textTert">{meta.role}</p>
-          </div>
-        </div>
-        <button onClick={onClose}
-          className="p-2 rounded-fluent-md hover:bg-fluent-card text-fluent-textTert hover:text-fluent-textSec transition-colors">
-          <CloseIcon />
-        </button>
+      {/* Description */}
+      <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-4">
+        <p className="text-sm text-fluent-textSec leading-relaxed">{meta.desc}</p>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-2xl mx-auto space-y-5">
-          {/* Description */}
-          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
-            <h3 className="text-sm font-semibold text-fluent-text mb-2">Description</h3>
-            <p className="text-sm text-fluent-textSec leading-relaxed">{meta.desc}</p>
-          </div>
-
-          {/* Prompt Details */}
-          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
-            <h3 className="text-sm font-semibold text-fluent-text mb-3">Prompt Configuration</h3>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="flex flex-col gap-1">
-                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Size</span>
-                <span className="text-fluent-text font-mono">{agent.prompt_size_bytes?.toLocaleString()} B</span>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Lines</span>
-                <span className="text-fluent-text font-mono">{agent.prompt_lines}</span>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Framework</span>
-                <span className="text-fluent-text">{agent.framework || 'default'}</span>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Persona</span>
-                <span className="text-fluent-text">{agent.persona || 'none'}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Skills */}
-          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
-            <h3 className="text-sm font-semibold text-fluent-text mb-3">
-              Skills ({agent.skills?.length || 0})
-            </h3>
-            {agent.skills?.length > 0 ? (
-              <div className="space-y-2">
-                {agent.skills.map((s, i) => (
-                  <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-fluent-lg border ${
-                    s.exists ? 'border-fluent-success/20 bg-fluent-success/5' : 'border-fluent-danger/20 bg-fluent-danger/5'
-                  }`}>
-                    <div className="flex items-center gap-2">
-                      {s.exists ? (
-                        <span className="w-2 h-2 rounded-full bg-fluent-success" />
-                      ) : (
-                        <span className="w-2 h-2 rounded-full bg-fluent-danger" />
-                      )}
-                      <span className="text-sm text-fluent-text font-mono">{s.file}</span>
-                    </div>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                      s.exists ? 'bg-fluent-success/10 text-fluent-success' : 'bg-fluent-danger/10 text-fluent-danger'
-                    }`}>
-                      {s.exists ? 'Found' : 'Missing'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-fluent-textTert italic">No skills configured</p>
-            )}
-          </div>
-
-          {/* Model */}
-          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
-            <h3 className="text-sm font-semibold text-fluent-text mb-2">Model</h3>
-            <code className="text-sm text-fluent-accent font-mono">{agent.model}</code>
-          </div>
+      {/* Prompt Config */}
+      <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-4">
+        <h4 className="text-xs font-semibold text-fluent-textTert uppercase tracking-wider mb-3">Prompt</h4>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div><span className="text-[10px] text-fluent-textTert">Size</span><p className="text-fluent-text font-mono">{agent.prompt_size_bytes?.toLocaleString()} B</p></div>
+          <div><span className="text-[10px] text-fluent-textTert">Lines</span><p className="text-fluent-text font-mono">{agent.prompt_lines}</p></div>
+          <div><span className="text-[10px] text-fluent-textTert">Framework</span><p className="text-fluent-text">{agent.framework || 'default'}</p></div>
+          <div><span className="text-[10px] text-fluent-textTert">Persona</span><p className="text-fluent-text">{agent.persona || 'none'}</p></div>
         </div>
+      </div>
+
+      {/* Skills */}
+      <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-4">
+        <h4 className="text-xs font-semibold text-fluent-textTert uppercase tracking-wider mb-3">Skills ({agent.skills?.length || 0})</h4>
+        {agent.skills?.length > 0 ? (
+          <div className="space-y-1.5">
+            {agent.skills.map((s, i) => (
+              <div key={i} className={`flex items-center justify-between px-3 py-1.5 rounded-fluent-lg border text-sm ${
+                s.exists ? 'border-fluent-success/20 bg-fluent-success/5' : 'border-fluent-danger/20 bg-fluent-danger/5'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <span className={`w-1.5 h-1.5 rounded-full ${s.exists ? 'bg-fluent-success' : 'bg-fluent-danger'}`} />
+                  <span className="text-fluent-text font-mono text-xs">{s.file}</span>
+                </div>
+                <span className={`text-[10px] px-1.5 py-px rounded-full ${s.exists ? 'bg-fluent-success/10 text-fluent-success' : 'bg-fluent-danger/10 text-fluent-danger'}`}>
+                  {s.exists ? 'Found' : 'Missing'}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-fluent-textTert italic">No skills</p>
+        )}
+      </div>
+
+      {/* Model */}
+      <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-4">
+        <h4 className="text-xs font-semibold text-fluent-textTert uppercase tracking-wider mb-2">Model</h4>
+        <code className="text-sm text-fluent-accent font-mono">{agent.model}</code>
       </div>
     </div>
   )
