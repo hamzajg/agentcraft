@@ -108,7 +108,10 @@ class BackendDevAgent(AiderAgent):
     def _classify_failure(self, result: dict, output_path: Path, label: str) -> dict:
         exit_code = result.get("exit_code", -1)
         stderr = result.get("stderr", "")
-        content = output_path.read_text() if output_path.exists() else ""
+        # Skip reading if path is a directory or doesn't exist
+        content = ""
+        if output_path.exists() and output_path.is_file():
+            content = output_path.read_text()
 
         # Transient (crash, timeout)
         if exit_code != 0 and (exit_code == -1 or "timeout" in stderr.lower() or exit_code >= 128):

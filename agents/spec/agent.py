@@ -183,7 +183,10 @@ class SpecAgent(AiderAgent):
         """
         exit_code = result.get("exit_code", -1)
         stderr = result.get("stderr", "")
-        content = output_path.read_text() if output_path.exists() else ""
+        # Skip reading if path is a directory or doesn't exist
+        content = ""
+        if output_path.exists() and output_path.is_file():
+            content = output_path.read_text()
 
         # 1. Transient failure (aider crash, timeout, connection error)
         if exit_code != 0:

@@ -120,7 +120,10 @@ class DocsAgent(AiderAgent):
         import re
         exit_code = result.get("exit_code", -1)
         stderr = result.get("stderr", "")
-        content = output_path.read_text() if output_path.exists() else ""
+        # Skip reading if path is a directory or doesn't exist
+        content = ""
+        if output_path.exists() and output_path.is_file():
+            content = output_path.read_text()
         if exit_code != 0 and (exit_code == -1 or "timeout" in stderr.lower() or exit_code >= 128):
             return {"severity": "transient", "auto_retry": True, "needs_user_input": False, "escalated_message": ""}
         if _file_has_content(output_path) and self._looks_like_hallucination(content):
