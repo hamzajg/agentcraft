@@ -14,10 +14,7 @@ from core.base import AiderAgent
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the Architect Agent.
-
-Your role is to analyze requirements and design appropriate system architecture.
-"""
+SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else "# Architect Agent"
 
 
 def _ensure_file(path: Path) -> Path:

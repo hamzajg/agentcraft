@@ -14,10 +14,7 @@ from core.base import AiderAgent
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the Planner Agent.
-
-Your role is to decompose iterations into concrete tasks and assign them to appropriate agents.
-"""
+SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else "# Planner Agent"
 
 
 def _ensure_file(path: Path) -> Path:

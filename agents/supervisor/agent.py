@@ -14,10 +14,7 @@ from core.base import AiderAgent
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else """You are the Supervisor Agent.
-
-Your role is to orchestrate the AI agent team by gathering context and delegating tasks.
-"""
+SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else "# Supervisor Agent"
 
 
 def _ensure_file(path: Path) -> Path:

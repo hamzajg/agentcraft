@@ -74,6 +74,10 @@ class AiderAgent:
         self.model         = model
         self.workspace     = workspace or Path(".")
         self.system_prompt = system_prompt or f"# {self.role}\nYou are a helpful AI agent."
+
+        # Prepend universal base rules to every agent's system prompt
+        self.system_prompt = self._prepend_base_rules(self.system_prompt)
+
         self.skills        = skills or []
         self.framework_id  = framework_id
         self.max_retries   = max_retries
@@ -356,6 +360,14 @@ class AiderAgent:
         """
         from core.bus import AgentBus
         AgentBus.instance().register_handler(self.role, fn)
+
+    @staticmethod
+    def _prepend_base_rules(system_prompt: str) -> str:
+        """Prepend universal agent rules from _base_rules.md."""
+        base = Path(__file__).parent.parent / "prompts" / "_base_rules.md"
+        if base.exists():
+            return base.read_text() + "\n\n---\n\n" + system_prompt
+        return system_prompt
 
     # ── Aider execution ───────────────────────────────────────────────────────
 
