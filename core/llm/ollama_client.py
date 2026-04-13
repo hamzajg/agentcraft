@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables from .env file
 load_dotenv()
 
-OLLAMA_BASE    = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+from core.llm.config import get_ollama_config
 DEFAULT_MODEL  = "qwen2.5-coder:7b"
 DEFAULT_TIMEOUT = 120
 
@@ -74,10 +74,13 @@ class OllamaClient:
         messages.extend(self._history)
         messages.append({"role": "user", "content": user_message})
 
+        base_url, headers, _ = get_ollama_config()
+
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 resp = client.post(
-                    f"{OLLAMA_BASE}/api/chat",
+                    f"{base_url}/api/chat",
+                    headers=headers,
                     json={
                         "model":    self.model,
                         "messages": messages,
@@ -117,8 +120,10 @@ class OllamaClient:
             if system or self.system_prompt:
                 payload["system"] = system or self.system_prompt
 
+            base_url, headers, _ = get_ollama_config()
+
             with httpx.Client(timeout=self.timeout) as client:
-                resp = client.post(f"{OLLAMA_BASE}/api/generate", json=payload)
+                resp = client.post(f"{base_url}/api/generate", json=payload, headers=headers)
                 resp.raise_for_status()
                 return resp.json()["response"]
 
@@ -141,8 +146,10 @@ class OllamaClient:
             if system or self.system_prompt:
                 payload["system"] = system or self.system_prompt
 
+            base_url, headers, _ = get_ollama_config()
+
             with httpx.Client(timeout=self.timeout) as client:
-                with client.stream("POST", f"{OLLAMA_BASE}/api/generate", json=payload) as resp:
+                with client.stream("POST", f"{base_url}/api/generate", json=payload, headers=headers) as resp:
                     for line in resp.iter_lines():
                         if line:
                             chunk = json.loads(line)
@@ -193,8 +200,9 @@ class OllamaClient:
     def is_available(self) -> bool:
         """Check if Ollama is reachable and the model is available."""
         try:
+            base_url, headers, _ = get_ollama_config()
             with httpx.Client(timeout=5) as client:
-                resp = client.get(f"{OLLAMA_BASE}/api/tags")
+                resp = client.get(f"{base_url}/api/tags", headers=headers)
                 resp.raise_for_status()
                 models = [m["name"] for m in resp.json().get("models", [])]
                 base   = self.model.split(":")[0]

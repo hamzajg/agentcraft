@@ -19,7 +19,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+from core.llm.config import get_ollama_config
 
 # Maximum chunks returned per retrieve call
 DEFAULT_TOP_K  = 5
@@ -174,8 +174,10 @@ class RagClient:
 
     def _embed(self, text: str) -> list[float]:
         import httpx
+        base_url, headers, _ = get_ollama_config()
         resp = httpx.post(
-            f"{OLLAMA_BASE}/api/embeddings",
+            f"{base_url}/api/embeddings",
+            headers=headers,
             json={"model": self._embed_model, "prompt": text},
             timeout=30,
         )

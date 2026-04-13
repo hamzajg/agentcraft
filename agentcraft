@@ -117,16 +117,19 @@ def _check_ollama():
         print("  ✗ Ollama CLI not found — please install it")
         sys.exit(1)
         
-    api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+    from core.llm.config import get_ollama_config
+    base_url, headers, _ = get_ollama_config()
     
     import urllib.request
     try:
-        req = urllib.request.Request(f"{api_base}/api/tags")
+        req = urllib.request.Request(f"{base_url}/api/tags")
+        for k, v in headers.items():
+            req.add_header(k, v)
         with urllib.request.urlopen(req, timeout=3) as _:
             pass
     except Exception as e:
-        print(f"  ✗ Ollama unreachable at {api_base}")
-        print("    Violation: Missing environment variables or Ollama is offline.")
+        print(f"  ✗ Ollama unreachable at {base_url}")
+        print("    Violation: Gateway and fallback are both offline.")
         print("    Check your .env file or run 'ollama serve'")
         print(f"    Error details: {e}")
         sys.exit(1)
@@ -347,6 +350,17 @@ def cmd_build(args):
     print(f"  ✓ Model:      {model}")
     print(f"  ✓ Framework:  {framework or 'none'}")
     print(f"  ✓ RAG:        {'enabled' if rag_cfg.get('enabled') else 'disabled'}")
+    
+    from core.llm.config import get_ollama_config
+    import os
+    base_url, _, reason = get_ollama_config()
+    if base_url == os.getenv("OLLAMA_GATEWAY_URL", "http://localhost:8000"):
+        print(f"  ✓ API:        Gateway ({base_url})")
+    else:
+        msg = f"  ✓ API:        Ollama Fallback ({base_url})"
+        if reason:
+            msg += f"  (Reason: {reason})"
+        print(msg)
 
     # ── 2. Validate framework ────────────────────────────────────────────
     if framework:
@@ -376,22 +390,40 @@ def cmd_build(args):
     _check_ollama()
 
     import subprocess
+    from core.llm.config import get_ollama_config
+    import os
+    import httpx
+    
     models_to_pull = [model]
     if rag_cfg.get("enabled"):
         embed = rag_cfg.get("embed_model", "nomic-embed-text")
         if embed not in models_to_pull:
             models_to_pull.append(embed)
 
+    base_url, headers, _ = get_ollama_config()
+    gateway_url = os.getenv("OLLAMA_GATEWAY_URL", "http://localhost:8000")
+
     for m in models_to_pull:
         print(f"  Pulling model: {m} ... ", end="", flush=True)
-        result = subprocess.run(
-            ["ollama", "pull", m],
-            capture_output=True, text=True, timeout=600
-        )
-        print("ok" if result.returncode == 0 else "FAILED")
-        if result.returncode != 0:
-            print(f"    {result.stderr[:200]}")
-            sys.exit(1)
+        if base_url == gateway_url:
+            try:
+                with httpx.Client(timeout=600) as client:
+                    resp = client.post(f"{base_url}/api/pull", headers=headers, json={"name": m, "stream": False})
+                    resp.raise_for_status()
+                    print("ok")
+            except Exception as e:
+                print("FAILED")
+                print(f"    Gateway pull failed: {e}")
+                sys.exit(1)
+        else:
+            result = subprocess.run(
+                ["ollama", "pull", m],
+                capture_output=True, text=True, timeout=600
+            )
+            print("ok" if result.returncode == 0 else "FAILED")
+            if result.returncode != 0:
+                print(f"    {result.stderr[:200]}")
+                sys.exit(1)
 
     # ── 5. Ready ────────────────────────────────────────────────────────
     (ws_root / ".ai").mkdir(exist_ok=True)
@@ -505,6 +537,17 @@ def _run_workflow(args, start_from_iteration: int):
     _require_yaml(bootstrap_parser)
     _check_ollama()
     _log_env_info()
+    
+    from core.llm.config import get_ollama_config
+    import os
+    base_url, _, reason = get_ollama_config()
+    if base_url == os.getenv("OLLAMA_GATEWAY_URL", "http://localhost:8000"):
+        print(f"  ✓ API:        Gateway ({base_url})")
+    else:
+        msg = f"  ✓ API:        Ollama Fallback ({base_url})"
+        if reason:
+            msg += f"  (Reason: {reason})"
+        print(msg)
 
     team     = ws.get("agent_team", {})
     paths    = ws.get("paths", {})
