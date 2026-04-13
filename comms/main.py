@@ -67,14 +67,15 @@ def _workspace_root() -> Path:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+    import os
+    from core.event_stream import ES, FileEventStore
+
     store.init_db()
     pending_store.set_loop(asyncio.get_running_loop())
 
     # Configure EventStream file store for cross-process event sharing
     try:
-        import os
-        from core.event_stream import ES, FileEventStore
-
         # Use explicit workspace path from env, or auto-detect
         ws_root_str = os.environ.get("AGENTCRAFT_WORKSPACE")
         ws_root = Path(ws_root_str) if ws_root_str else _workspace_root()
@@ -84,7 +85,6 @@ async def lifespan(app: FastAPI):
         ES.set_file_store(FileEventStore(store_path))
 
         # Wire ES → WebSocket bridge
-        import asyncio
         loop = asyncio.get_running_loop()
         ES.set_loop(loop)
         ES.subscribe(_es_subscriber)
