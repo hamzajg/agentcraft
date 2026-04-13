@@ -19,8 +19,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE      = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
-OLLAMA_EMBED_URL = f"{OLLAMA_BASE}/api/embeddings"
+from core.llm.config import get_ollama_config
 BATCH_SIZE       = 16   # chunks per embedding request
 
 
@@ -125,11 +124,14 @@ def _embed_batch(texts: list[str], embed_model: str) -> list[list[float]]:
 
 def _embed_texts(texts: list[str], embed_model: str) -> Optional[list[list[float]]]:
     """Call Ollama embedding endpoint for a batch of texts."""
+    base_url, headers, _ = get_ollama_config()
+    embed_url = f"{base_url}/api/embeddings"
+    
     results = []
     for text in texts:
         try:
             with httpx.Client(timeout=30) as client:
-                resp = client.post(OLLAMA_EMBED_URL, json={
+                resp = client.post(embed_url, headers=headers, json={
                     "model":  embed_model,
                     "prompt": text,
                 })

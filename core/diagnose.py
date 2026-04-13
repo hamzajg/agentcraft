@@ -309,9 +309,27 @@ def pull_models(tier_cfg: dict):
         tier_cfg["llm_model"],
     }
     print(f"\nPulling {len(models)} model(s)...")
+    
+    from core.llm.config import get_ollama_config
+    import os
+    import httpx
+    
+    base_url, headers, _ = get_ollama_config()
+    gateway_url = os.getenv("OLLAMA_GATEWAY_URL", "http://localhost:8000")
+    
     for model in sorted(models):
-        print(f"  ollama pull {model}")
-        subprocess.run(["ollama", "pull", model], check=False)
+        if base_url == gateway_url:
+            print(f"  pulling via gateway {model}")
+            try:
+                with httpx.Client(timeout=600) as client:
+                    resp = client.post(f"{base_url}/api/pull", headers=headers, json={"name": model, "stream": False})
+                    resp.raise_for_status()
+                    print("  ok")
+            except Exception as e:
+                print(f"  Gateway pull failed: {e}")
+        else:
+            print(f"  ollama pull {model}")
+            subprocess.run(["ollama", "pull", model], check=False)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
