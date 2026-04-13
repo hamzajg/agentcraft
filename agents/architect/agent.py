@@ -455,18 +455,6 @@ Respond with ONLY this JSON:
                     pass
         return {}
 
-    def _minimal_single_iteration(self, iteration_id: int, phase: int) -> dict:
-        """Create a minimal iteration when LLM fails."""
-        return {
-            "id": iteration_id,
-            "phase": phase,
-            "name": f"implement features part {iteration_id}",
-            "goal": "Implement core functionality for this phase",
-            "files_expected": [f"src/part{iteration_id}.py"],
-            "depends_on": [iteration_id - 1] if iteration_id > 1 else [],
-            "acceptance_criteria": ["file created", "runs without errors"]
-        }
-
     def _parse_iterations(self, output: str) -> list[dict]:
         """Parse iteration JSON from LLM output with robust error handling."""
         if not output or not output.strip():
