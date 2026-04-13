@@ -134,7 +134,10 @@ class ArchitectAgent(AiderAgent):
         import re
         exit_code = result.get("exit_code", -1)
         stderr = result.get("stderr", "")
-        content = output_path.read_text() if output_path.exists() else ""
+        # Skip reading if path is a directory or doesn't exist
+        content = ""
+        if output_path.exists() and output_path.is_file():
+            content = output_path.read_text()
         if exit_code != 0 and (exit_code == -1 or "timeout" in stderr.lower() or exit_code >= 128):
             return {"severity": "transient", "auto_retry": True, "needs_user_input": False, "escalated_message": ""}
         if _file_has_content(output_path) and self._looks_like_hallucination(content):
@@ -145,7 +148,6 @@ class ArchitectAgent(AiderAgent):
         return {"severity": "critical", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
 
     def _looks_like_hallucination(self, content: str) -> bool:
-        import re
         if not content or len(content.strip()) < 20:
             return True
         lines = content.splitlines()
