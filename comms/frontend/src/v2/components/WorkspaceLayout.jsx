@@ -22,7 +22,31 @@ export function WorkspaceLayout() {
 
   // Agent Build Stage state
   const [agentBuildReport, setAgentBuildReport] = useState(null)
+  const [buildStageLoading, setBuildStageLoading] = useState(true)
   const [selectedAgent, setSelectedAgent] = useState(null)
+
+  // Poll for agent build report until data arrives
+  useEffect(() => {
+    let cancelled = false
+    setBuildStageLoading(true)
+    const poll = async () => {
+      try {
+        const data = await api.agentBuildReport()
+        if (!cancelled && data && data.agents && Object.keys(data.agents).length > 0) {
+          setAgentBuildReport(data.agents)
+          setBuildStageLoading(false)
+          return // Stop polling once we have data
+        }
+      } catch (e) {
+        // Ignore errors, keep polling
+      }
+      if (!cancelled) {
+        setTimeout(poll, 2000) // Retry every 2s
+      }
+    }
+    poll()
+    return () => { cancelled = true }
+  }, [])
 
   const [channels, setChannels] = useState([])
   const [statuses, setStatuses] = useState({})
@@ -436,6 +460,14 @@ export function WorkspaceLayout() {
               onSelectAgent={setSelectedAgent}
               onDismiss={() => { setAgentBuildReport(null); setSelectedAgent(null); }}
             />
+          ) : buildStageLoading ? (
+            <div className="h-full flex flex-col items-center justify-center text-fluent-textTert animate-fade-in">
+              <div className="w-16 h-16 mb-4 rounded-fluent-xl bg-fluent-card border border-fluent-border flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-fluent-accent border-t-transparent rounded-full animate-spin" />
+              </div>
+              <h3 className="text-base font-medium text-fluent-textSec mb-1">Agent Build Stage</h3>
+              <p className="text-xs text-fluent-textTert">Preparing agents...</p>
+            </div>
           ) : showFileViewer && selectedFile ? (
             <FileViewer file={selectedFile} onClose={handleCloseFile} />
           ) : (

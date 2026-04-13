@@ -156,6 +156,21 @@ async def get_pending():
     }
 
 
+@app.get("/api/agents/build-report")
+async def get_agent_build_report():
+    """Get the latest agent build stage report from the event store."""
+    try:
+        from core.event_stream import ES
+        events = ES.list_events()
+        # Find the most recent agents_built event
+        for ev in reversed(events):
+            if ev.get("type") == "agents_built":
+                return ev.get("data", {})
+    except Exception as e:
+        logger.debug("[comms] build report fetch failed: %s", e)
+    return {"agents": {}}
+
+
 @app.post("/api/clarify")
 async def clarify(req: ClarificationRequest):
     """

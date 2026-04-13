@@ -239,6 +239,15 @@ class _EventStream:
         """Get the file store if configured."""
         return self._file_store
 
+    def list_events(self, limit: int = 1000) -> list[dict]:
+        """List all events from the file store (most recent last)."""
+        if self._file_store:
+            events = self._file_store.read_all()
+            if limit:
+                return events[-limit:]
+            return events
+        return list(self._ring)
+
     # ── Emit ──────────────────────────────────────────────────────────────────
 
     def emit(self, event_type: str, payload: dict | None = None) -> None:
