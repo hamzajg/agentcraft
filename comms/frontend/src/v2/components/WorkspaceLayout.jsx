@@ -9,7 +9,7 @@ import { api } from '../../lib/api'
 /* ─── Fluent UI v2 Workspace Layout ───
    Chat-centric responsive 3-panel design:
    Left  : File Explorer (collapsible, 260px)
-   Center: Active workspace / file viewer (flexible)
+   Center: Active workspace / file viewer / Agent Build Stage (flexible)
    Right : Agent Chat Panel (380px, primary focus)
    Bottom: Activity feed (minimizable)
 */
@@ -19,6 +19,10 @@ export function WorkspaceLayout() {
   const [showFileViewer, setShowFileViewer] = useState(false)
   const [activityMinimized, setActivityMinimized] = useState(true)
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
+
+  // Agent Build Stage state
+  const [agentBuildReport, setAgentBuildReport] = useState(null)
+  const [selectedAgent, setSelectedAgent] = useState(null)
 
   const [channels, setChannels] = useState([])
   const [statuses, setStatuses] = useState({})
@@ -252,6 +256,17 @@ export function WorkspaceLayout() {
       return
     }
 
+    // ── Agent Build Stage ────────────────────────────────────────────
+    if (event === 'agents_built') {
+      setAgentBuildReport(payload.agents || {})
+      setEvents(prev => [{
+        id: crypto.randomUUID(), type: event,
+        text: `Agent build complete — ${Object.keys(payload.agents || {}).length} agents ready`,
+        time: new Date().toISOString()
+      }, ...prev].slice(0, 200))
+      return
+    }
+
     // Generic catch for remaining build events
     if (event.includes('task') || event.includes('phase') || event.includes('iter') || event.includes('build')) {
       const id = payload.id || crypto.randomUUID()
@@ -407,9 +422,21 @@ export function WorkspaceLayout() {
           <FileExplorer onFileSelect={handleFileSelect} />
         </div>
 
-        {/* Center — Workspace / File Viewer */}
+        {/* Center — Workspace / File Viewer / Agent Build Stage */}
         <div className="flex-1 min-w-0 overflow-hidden bg-fluent-bg">
-          {showFileViewer && selectedFile ? (
+          {selectedAgent && agentBuildReport ? (
+            <AgentDetailCard
+              agentId={selectedAgent}
+              agent={agentBuildReport[selectedAgent]}
+              onClose={() => setSelectedAgent(null)}
+            />
+          ) : agentBuildReport ? (
+            <AgentBuildStage
+              agents={agentBuildReport}
+              onSelectAgent={setSelectedAgent}
+              onDismiss={() => { setAgentBuildReport(null); setSelectedAgent(null); }}
+            />
+          ) : showFileViewer && selectedFile ? (
             <FileViewer file={selectedFile} onClose={handleCloseFile} />
           ) : (
             <FluentEmptyState onFileClick={() => setLeftPanelCollapsed(false)} />
@@ -615,9 +642,245 @@ function FluentEmptyState({ onFileClick }) {
   )
 }
 
+/* ═══════════════════════════════════════════════════════
+   Agent Build Stage — Canvas showing agent bots
+   ═══════════════════════════════════════════════════════ */
+
+const AGENT_INFO = {
+  supervisor:       { role: 'Orchestrator',       color: 'bg-violet',     bg: 'bg-violet/10',      border: 'border-violet/30',     icon: '👑', desc: 'Coordinates all agents, delegates tasks, reports progress to user' },
+  architect:        { role: 'Architect',           color: 'bg-blue-400',   bg: 'bg-blue-400/10',    border: 'border-blue-400/30',   icon: '🏗️', desc: 'Analyzes requirements, designs system architecture, plans iterations' },
+  planner:          { role: 'Planner',             color: 'bg-amber',      bg: 'bg-amber/10',       border: 'border-amber/30',      icon: '📋', desc: 'Decomposes iterations into file-level tasks, assigns agents' },
+  backend_dev:      { role: 'Backend Dev',         color: 'bg-emerald',    bg: 'bg-emerald/10',     border: 'border-emerald/30',    icon: '⚙️', desc: 'Implements source code — any language, framework, or type' },
+  test_dev:         { role: 'Test Dev',            color: 'bg-cyan-400',   bg: 'bg-cyan-400/10',    border: 'border-cyan-400/30',   icon: '🧪', desc: 'Writes unit and integration tests following TDD principles' },
+  reviewer:         { role: 'Reviewer',            color: 'bg-rose',       bg: 'bg-rose/10',        border: 'border-rose/30',       icon: '🔍', desc: 'Reviews code for correctness, intent matching, and simplicity' },
+  integration_test: { role: 'Integration Test',    color: 'bg-teal',       bg: 'bg-teal/10',        border: 'border-teal/30',       icon: '🔗', desc: 'Writes integration and E2E tests that verify components work together' },
+  config_agent:     { role: 'Config',              color: 'bg-sky',        bg: 'bg-sky/10',         border: 'border-sky/30',        icon: '⚡', desc: 'Creates configuration files (JSON, YAML, TOML, env, etc.)' },
+  docs_agent:       { role: 'Docs',                color: 'bg-indigo',     bg: 'bg-indigo/10',      border: 'border-indigo/30',     icon: '📝', desc: 'Writes documentation — README, API docs, usage guides' },
+  cicd:             { role: 'CI/CD',               color: 'bg-orange',     bg: 'bg-orange/10',      border: 'border-orange/30',     icon: '🚀', desc: 'Sets up CI/CD pipelines, Docker, deployment infrastructure' },
+  spec_agent:       { role: 'Spec',                color: 'bg-pink',       bg: 'bg-pink/10',        border: 'border-pink/30',       icon: '📐', desc: 'Writes technical specifications from project requirements' },
+}
+
+function AgentBuildStage({ agents, onSelectAgent, onDismiss }) {
+  const agentEntries = Object.entries(agents)
+  const readyCount = agentEntries.length
+
+  return (
+    <div className="h-full flex flex-col bg-fluent-bg overflow-hidden animate-fade-in">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-fluent-borderSubtle flex items-center justify-between flex-shrink-0">
+        <div>
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-fluent-lg bg-fluent-accentSubtle border border-fluent-accentBorder flex items-center justify-center">
+              <span className="text-sm">🤖</span>
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-fluent-text">Agent Build Stage</h2>
+              <p className="text-xs text-fluent-textTert">{readyCount} agents prepared and ready</p>
+            </div>
+          </div>
+        </div>
+        <button onClick={onDismiss}
+          className="p-2 rounded-fluent-md hover:bg-fluent-card text-fluent-textTert hover:text-fluent-textSec transition-colors"
+          title="Dismiss">
+          <CloseIcon />
+        </button>
+      </div>
+
+      {/* Agent Grid */}
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 max-w-6xl mx-auto">
+          {agentEntries.map(([id, info]) => {
+            const meta = AGENT_INFO[id] || { role: id, color: 'bg-zinc-400', bg: 'bg-zinc-400/10', border: 'border-zinc-400/30', icon: '🤖', desc: 'Agent' }
+            return (
+              <AgentBotCard
+                key={id}
+                id={id}
+                info={info}
+                meta={meta}
+                onClick={() => onSelectAgent(id)}
+              />
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AgentBotCard({ id, info, meta, onClick }) {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className={`relative group flex flex-col items-start p-4 rounded-fluent-xl border transition-all duration-200 text-left
+        ${meta.bg} ${meta.border} hover:shadow-fluent-elevated hover:scale-[1.02] active:scale-[0.98] animate-scale-in`}
+    >
+      {/* Bot avatar */}
+      <div className={`w-12 h-12 rounded-fluent-lg ${meta.bg} border ${meta.border} flex items-center justify-center text-xl mb-3 transition-transform duration-200 group-hover:scale-110`}>
+        {meta.icon}
+      </div>
+
+      {/* Name */}
+      <p className="text-sm font-semibold text-fluent-text">{info.label || meta.role}</p>
+
+      {/* Role */}
+      <p className="text-xs text-fluent-textTert mt-0.5">{meta.role}</p>
+
+      {/* Skills count */}
+      {info.skills?.length > 0 && (
+        <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-fluent-accentSubtle text-fluent-accent">
+          {info.skills.length} skill{info.skills.length > 1 ? 's' : ''}
+        </span>
+      )}
+
+      {/* Hover tooltip */}
+      {hovered && (
+        <div className="absolute -bottom-16 left-1/2 -translate-x-1/2 z-50 w-64 animate-slide-up">
+          <div className="bg-fluent-card border border-fluent-border rounded-fluent-lg p-3 shadow-fluent-flyout">
+            <div className="flex items-center gap-2 mb-1">
+              <span>{meta.icon}</span>
+              <span className="text-xs font-semibold text-fluent-text">{info.label}</span>
+            </div>
+            <p className="text-[11px] text-fluent-textSec leading-snug">{meta.desc}</p>
+            <div className="mt-2 pt-2 border-t border-fluent-borderSubtle flex items-center justify-between">
+              <span className="text-[10px] text-fluent-textTert">Prompt: {info.prompt_size_bytes}B</span>
+              <span className="text-[10px] text-fluent-textTert">Click for details →</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </button>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════
+   Agent Detail Card — Full details on click
+   ═══════════════════════════════════════════════════════ */
+
+function AgentDetailCard({ agentId, agent, onClose }) {
+  const meta = AGENT_INFO[agentId] || { role: agentId, color: 'bg-zinc-400', bg: 'bg-zinc-400/10', border: 'border-zinc-400/30', icon: '🤖', desc: 'Agent' }
+
+  return (
+    <div className="h-full flex flex-col bg-fluent-bg overflow-hidden animate-fade-in">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-fluent-borderSubtle flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-3">
+          <button onClick={onClose}
+            className="p-1.5 rounded-fluent-md hover:bg-fluent-card text-fluent-textTert hover:text-fluent-textSec transition-colors">
+            <ChevronLeftIcon />
+          </button>
+          <div className={`w-10 h-10 rounded-fluent-lg ${meta.bg} border ${meta.border} flex items-center justify-center text-xl`}>
+            {meta.icon}
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-fluent-text">{agent.label}</h2>
+            <p className="text-xs text-fluent-textTert">{meta.role}</p>
+          </div>
+        </div>
+        <button onClick={onClose}
+          className="p-2 rounded-fluent-md hover:bg-fluent-card text-fluent-textTert hover:text-fluent-textSec transition-colors">
+          <CloseIcon />
+        </button>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-2xl mx-auto space-y-5">
+          {/* Description */}
+          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
+            <h3 className="text-sm font-semibold text-fluent-text mb-2">Description</h3>
+            <p className="text-sm text-fluent-textSec leading-relaxed">{meta.desc}</p>
+          </div>
+
+          {/* Prompt Details */}
+          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
+            <h3 className="text-sm font-semibold text-fluent-text mb-3">Prompt Configuration</h3>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Size</span>
+                <span className="text-fluent-text font-mono">{agent.prompt_size_bytes?.toLocaleString()} B</span>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Lines</span>
+                <span className="text-fluent-text font-mono">{agent.prompt_lines}</span>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Framework</span>
+                <span className="text-fluent-text">{agent.framework || 'default'}</span>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-fluent-textTert uppercase tracking-wider">Persona</span>
+                <span className="text-fluent-text">{agent.persona || 'none'}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Skills */}
+          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
+            <h3 className="text-sm font-semibold text-fluent-text mb-3">
+              Skills ({agent.skills?.length || 0})
+            </h3>
+            {agent.skills?.length > 0 ? (
+              <div className="space-y-2">
+                {agent.skills.map((s, i) => (
+                  <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-fluent-lg border ${
+                    s.exists ? 'border-fluent-success/20 bg-fluent-success/5' : 'border-fluent-danger/20 bg-fluent-danger/5'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      {s.exists ? (
+                        <span className="w-2 h-2 rounded-full bg-fluent-success" />
+                      ) : (
+                        <span className="w-2 h-2 rounded-full bg-fluent-danger" />
+                      )}
+                      <span className="text-sm text-fluent-text font-mono">{s.file}</span>
+                    </div>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                      s.exists ? 'bg-fluent-success/10 text-fluent-success' : 'bg-fluent-danger/10 text-fluent-danger'
+                    }`}>
+                      {s.exists ? 'Found' : 'Missing'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-fluent-textTert italic">No skills configured</p>
+            )}
+          </div>
+
+          {/* Model */}
+          <div className="rounded-fluent-xl border border-fluent-borderSubtle bg-fluent-surfaceAlt p-5">
+            <h3 className="text-sm font-semibold text-fluent-text mb-2">Model</h3>
+            <code className="text-sm text-fluent-accent font-mono">{agent.model}</code>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ═══════════════════════════════════════════
    Icons
    ═══════════════════════════════════════════ */
+
+function ChevronLeftIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  )
+}
+
+function CloseIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
 
 function TerminalIcon() {
   return (
