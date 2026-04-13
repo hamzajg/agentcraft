@@ -6,10 +6,19 @@ import { ActivityPanel } from './ActivityPanel'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import { api } from '../../lib/api'
 
+/* ─── Fluent UI v2 Workspace Layout ───
+   Chat-centric responsive 3-panel design:
+   Left  : File Explorer (collapsible, 260px)
+   Center: Active workspace / file viewer (flexible)
+   Right : Agent Chat Panel (380px, primary focus)
+   Bottom: Activity feed (minimizable)
+*/
+
 export function WorkspaceLayout() {
   const [selectedFile, setSelectedFile] = useState(null)
-  const [showFileViewer, setShowFileViewer] = useState(true)
+  const [showFileViewer, setShowFileViewer] = useState(false)
   const [activityMinimized, setActivityMinimized] = useState(true)
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
 
   const [channels, setChannels] = useState([])
   const [statuses, setStatuses] = useState({})
@@ -21,9 +30,9 @@ export function WorkspaceLayout() {
   const [events, setEvents] = useState([])
   const [busMessages, setBusMessages] = useState([])
 
-  // ── Build progress state ─────────────────────────────────────────────
+  // Build progress state
   const [buildState, setBuildState] = useState({
-    status: 'idle',        // idle | preparing | running | paused | stopped | done | error
+    status: 'idle',
     currentPhase: null,
     currentIteration: null,
     currentTask: null,
@@ -41,7 +50,7 @@ export function WorkspaceLayout() {
     if (event === '_connected') { setConnected(true); return }
     if (event === '_disconnected') { setConnected(false); return }
 
-    // ── Clarification messages (agent → human) ─────────────────────────
+    // Clarification messages (agent → human)
     if (event === 'clarification') {
       const m = payload
       setMessages(prev => {
@@ -83,7 +92,7 @@ export function WorkspaceLayout() {
       return
     }
 
-    // ── Agent status updates ───────────────────────────────────────────
+    // Agent status updates
     if (event === 'agent_status') {
       setStatuses(prev => ({ ...prev, [payload.agent_id]: payload.status }))
       const id = payload.id || crypto.randomUUID()
@@ -91,14 +100,14 @@ export function WorkspaceLayout() {
       return
     }
 
-    // ── Log messages ───────────────────────────────────────────────────
+    // Log messages
     if (event === 'log') {
       const id = payload.id || crypto.randomUUID()
       setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.message?.slice(0, 120) || 'Log entry', time: new Date().toISOString() }, ...prev].slice(0, 200))
       return
     }
 
-    // ── Agent-to-Agent bus messages ────────────────────────────────────
+    // Agent-to-Agent bus messages
     if (event.startsWith('agent_')) {
       const id = payload.id || crypto.randomUUID()
       const fromAgent = payload.from_agent || payload.agent_id || ''
@@ -125,7 +134,6 @@ export function WorkspaceLayout() {
           text = `${fromAgent}: ${event}`
       }
 
-      // Store bus message for AgentPanel display
       setBusMessages(prev => [{
         id, type: event, from_agent: fromAgent, to_agent: toAgent,
         content: payload.content, text, time: new Date().toISOString(),
@@ -135,7 +143,7 @@ export function WorkspaceLayout() {
       return
     }
 
-    // ── Build progress tracking ────────────────────────────────────────
+    // Build progress tracking
     if (event === 'build_started') {
       setBuildState(prev => ({
         ...prev, status: 'running', message: 'Build started',
@@ -244,7 +252,7 @@ export function WorkspaceLayout() {
       return
     }
 
-    // Generic catch for any remaining build/phase/iter/task events
+    // Generic catch for remaining build events
     if (event.includes('task') || event.includes('phase') || event.includes('iter') || event.includes('build')) {
       const id = payload.id || crypto.randomUUID()
       setEvents(prev => [{ id, type: event, agent_id: payload.agent_id, text: payload.text || payload.content || event, time: new Date().toISOString() }, ...prev].slice(0, 200))
@@ -270,10 +278,7 @@ export function WorkspaceLayout() {
             next[m.agent_id] = [...arr, m]
           } else {
             next[m.agent_id] = arr.map(x => {
-              // Never downgrade replied status back to pending
-              if (x.id === m.id && x.status === 'replied') {
-                return x // Keep replied status
-              }
+              if (x.id === m.id && x.status === 'replied') return x
               return x.id === m.id ? m : x
             })
           }
@@ -305,7 +310,6 @@ export function WorkspaceLayout() {
           if (idx < 0) {
             merged.push(m)
           } else if (m.status === 'replied' && merged[idx].status !== 'replied') {
-            // Never overwrite replied status with pending
             merged[idx] = m
           } else if (m.status !== 'replied' && merged[idx].status === 'replied') {
             // Keep replied status
@@ -313,7 +317,6 @@ export function WorkspaceLayout() {
             merged[idx] = m
           }
         }
-        // Sort by created_at ascending
         merged.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
         return { ...prev, [activeAgent]: merged }
       })
@@ -346,14 +349,10 @@ export function WorkspaceLayout() {
     }
   }
 
-  // Load full message history for a specific agent
   const loadAgentMessages = useCallback(async (agentId) => {
     try {
       const msgs = await api.messages(agentId, 100)
-      console.log(`[chat] loaded ${msgs?.length || 0} messages for ${agentId}`)
       if (msgs && msgs.length > 0) {
-        const pendingCount = msgs.filter(m => m.status === 'pending').length
-        console.log(`[chat] ${pendingCount} pending messages for ${agentId}`)
         setMessages(prev => {
           const existing = prev[agentId] ?? []
           const merged = [...existing]
@@ -361,11 +360,8 @@ export function WorkspaceLayout() {
             const idx = merged.findIndex(x => x.id === m.id)
             if (idx < 0) {
               merged.push(m)
-            } else {
-              // Update if status changed (e.g., pending -> replied)
-              if (m.status !== merged[idx].status) {
-                merged[idx] = m
-              }
+            } else if (m.status !== merged[idx].status) {
+              merged[idx] = m
             }
           }
           merged.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
@@ -388,50 +384,40 @@ export function WorkspaceLayout() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-slate-950 overflow-hidden">
-      <Header
+    <div className="h-screen flex flex-col bg-fluent-bg overflow-hidden font-sans">
+      {/* ─── Top Bar ─── */}
+      <TopBar
         connected={connected}
         pendingCount={pendingCount}
         agentCount={channels?.length || 0}
         statuses={statuses}
         buildState={buildState}
-        onLogoClick={() => {}}
+        onToggleLeftPanel={() => setLeftPanelCollapsed(p => !p)}
+        leftPanelCollapsed={leftPanelCollapsed}
       />
 
-      <div className="flex-1 flex overflow-hidden pb-20">
-        <div className="w-72 flex-shrink-0 border-r border-slate-800 overflow-hidden">
+      {/* ─── Main Content Area ─── */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left Panel — File Explorer */}
+        <div
+          className={`flex-shrink-0 border-r border-fluent-borderSubtle bg-fluent-surface transition-all duration-200 ease-ease overflow-hidden ${
+            leftPanelCollapsed ? 'w-0 border-r-0' : 'w-[260px]'
+          }`}
+        >
           <FileExplorer onFileSelect={handleFileSelect} />
         </div>
 
-        <div className="flex-1 min-w-0 overflow-hidden">
+        {/* Center — Workspace / File Viewer */}
+        <div className="flex-1 min-w-0 overflow-hidden bg-fluent-bg">
           {showFileViewer && selectedFile ? (
             <FileViewer file={selectedFile} onClose={handleCloseFile} />
           ) : (
-            <div className="h-full flex flex-col items-center justify-center text-slate-500 bg-slate-950 p-8">
-              <WelcomeIcon className="w-20 h-20 mb-6 text-slate-700" />
-              <h2 className="text-xl font-semibold text-slate-400 mb-3">AgentCraft Workspace</h2>
-              <p className="text-sm text-slate-500 text-center max-w-lg mb-8">
-                Browse project files, communicate with agents, and monitor activity in real-time.
-              </p>
-              <div className="flex items-center gap-6 text-xs text-slate-600">
-                <span className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-violet-500" />
-                  <span>Documentation</span>
-                </span>
-                <span className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-amber-500" />
-                  <span>Workflow</span>
-                </span>
-                <span className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-teal-500" />
-                  <span>Generated Project</span>
-                </span>
-              </div>
-            </div>
+            <FluentEmptyState onFileClick={() => setLeftPanelCollapsed(false)} />
           )}
         </div>
 
-        <div className="w-80 flex-shrink-0 overflow-hidden border-l border-slate-800">
+        {/* Right Panel — Agent Chat (primary focus) */}
+        <div className="w-[380px] min-w-[320px] max-w-[480px] flex-shrink-0 overflow-hidden border-l border-fluent-borderSubtle bg-fluent-surface">
           <AgentPanel
             channels={channels}
             statuses={statuses}
@@ -447,6 +433,7 @@ export function WorkspaceLayout() {
         </div>
       </div>
 
+      {/* ─── Bottom Activity Panel ─── */}
       <ActivityPanel
         events={events}
         onMinimize={setActivityMinimized}
@@ -455,133 +442,186 @@ export function WorkspaceLayout() {
   )
 }
 
-function Header({ connected, pendingCount, agentCount, statuses, buildState, onLogoClick }) {
+/* ═══════════════════════════════════════════
+   TopBar — Fluent UI styled header
+   ═══════════════════════════════════════════ */
+
+function TopBar({ connected, pendingCount, agentCount, statuses, buildState, onToggleLeftPanel, leftPanelCollapsed }) {
   const activeAgents = Object.entries(statuses).filter(([, s]) => s === 'running').length
   const blockedAgents = Object.entries(statuses).filter(([, s]) => s === 'blocked').length
-  const idleAgents = Object.entries(statuses).filter(([, s]) => s === 'idle').length
 
   return (
-    <header className="h-12 flex-shrink-0 bg-slate-900 border-b border-slate-800 flex items-center px-4 gap-3">
-      <button onClick={onLogoClick} className="flex items-center gap-2 hover:opacity-80 transition-opacity">
-        <div className="w-6 h-6 rounded-md bg-accent/20 border border-accent/30 flex items-center justify-center">
+    <header className="h-12 flex-shrink-0 bg-fluent-surfaceAlt border-b border-fluent-border flex items-center px-3 gap-2">
+      {/* Logo + toggle */}
+      <button
+        onClick={onToggleLeftPanel}
+        className="flex items-center gap-2 hover:bg-fluent-card rounded-fluent-md px-2 py-1.5 transition-colors"
+        title={leftPanelCollapsed ? 'Show file explorer' : 'Hide file explorer'}
+      >
+        <div className="w-7 h-7 rounded-fluent-md bg-fluent-accentSubtle border border-fluent-accentBorder flex items-center justify-center">
           <TerminalIcon />
         </div>
-        <span className="font-semibold text-sm text-slate-200">AgentCraft</span>
+        <span className="font-semibold text-sm text-fluent-text">AgentCraft</span>
       </button>
 
+      {/* Divider */}
+      <div className="w-px h-5 bg-fluent-borderSubtle" />
+
       {/* Connection status */}
-      <div className="flex items-center gap-1.5">
-        <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-teal' : 'bg-danger'}`} />
-        <span className="text-[11px] text-slate-500">{connected ? 'connected' : 'reconnecting…'}</span>
+      <div className="flex items-center gap-1.5 px-1">
+        <span className={`w-2 h-2 rounded-full transition-colors ${connected ? 'bg-fluent-success' : 'bg-fluent-danger animate-pulse'}`} />
+        <span className="text-[11px] text-fluent-textTert">{connected ? 'Connected' : 'Reconnecting…'}</span>
       </div>
 
-      {/* Build progress bar */}
+      {/* Build progress */}
       {buildState.status !== 'idle' && (
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          {/* Build status badge */}
-          <span className={`flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
-            buildState.status === 'running' ? 'bg-teal/10 text-teal' :
-            buildState.status === 'done' ? 'bg-teal/10 text-teal' :
-            buildState.status === 'paused' ? 'bg-slate-700 text-slate-400' :
-            buildState.status === 'stopped' ? 'bg-danger/10 text-danger' :
-            buildState.status === 'error' ? 'bg-danger/10 text-danger' :
-            'bg-slate-800 text-slate-400'
-          }`}>
-            {buildState.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />}
-            {buildState.status === 'running' ? 'Running' :
-             buildState.status === 'done' ? 'Done' :
-             buildState.status === 'paused' ? 'Paused' :
-             buildState.status === 'stopped' ? 'Stopped' :
-             buildState.status === 'error' ? 'Error' :
-             buildState.status}
-          </span>
+        <>
+          <div className="w-px h-5 bg-fluent-borderSubtle" />
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <BuildBadge buildState={buildState} />
 
-          {/* Current phase/iteration */}
-          {buildState.currentPhase && (
-            <span className="text-xs text-slate-400 truncate">
-              Phase {buildState.currentPhase}
-              {buildState.currentIteration && ` → Iter ${buildState.currentIteration}`}
-            </span>
-          )}
+            {buildState.currentPhase && (
+              <span className="text-xs text-fluent-textSec truncate">
+                Phase {buildState.currentPhase}
+                {buildState.currentIteration && <span className="text-fluent-textTert mx-1">›</span>}
+                {buildState.currentIteration && `Iter ${buildState.currentIteration}`}
+              </span>
+            )}
 
-          {/* Approved/Rejected counters */}
-          {(buildState.approvedCount > 0 || buildState.rejectedCount > 0) && (
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {buildState.approvedCount > 0 && (
-                <span className="text-xs text-teal">✓ {buildState.approvedCount}</span>
-              )}
-              {buildState.rejectedCount > 0 && (
-                <span className="text-xs text-amber">✗ {buildState.rejectedCount}</span>
-              )}
-            </div>
-          )}
+            {(buildState.approvedCount > 0 || buildState.rejectedCount > 0) && (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {buildState.approvedCount > 0 && (
+                  <span className="text-xs text-fluent-success font-medium">✓ {buildState.approvedCount}</span>
+                )}
+                {buildState.rejectedCount > 0 && (
+                  <span className="text-xs text-fluent-warning font-medium">✗ {buildState.rejectedCount}</span>
+                )}
+              </div>
+            )}
 
-          {/* Current task */}
-          {buildState.currentTask && (
-            <span className="text-xs text-slate-500 truncate">
-              [{buildState.currentTask.agent}] {buildState.currentTask.file}
-            </span>
-          )}
-        </div>
+            {buildState.currentTask && (
+              <span className="text-xs text-fluent-textTert truncate font-mono">
+                [{buildState.currentTask.agent}] {buildState.currentTask.file}
+              </span>
+            )}
+          </div>
+        </>
       )}
 
-      {buildState.status === 'idle' && (
-        <div className="flex-1" />
-      )}
+      {buildState.status === 'idle' && <div className="flex-1" />}
 
       {/* Agent status summary */}
       {agentCount > 0 && (
         <div className="flex items-center gap-3 flex-shrink-0 text-[11px]">
           {activeAgents > 0 && (
-            <span className="flex items-center gap-1 text-teal">
-              <span className="w-1.5 h-1.5 rounded-full bg-teal" />
-              {activeAgents} running
+            <span className="flex items-center gap-1 text-fluent-success">
+              <span className="w-1.5 h-1.5 rounded-full bg-fluent-success animate-pulse" />
+              {activeAgents}
             </span>
           )}
           {blockedAgents > 0 && (
-            <span className="flex items-center gap-1 text-amber">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber" />
-              {blockedAgents} blocked
-            </span>
-          )}
-          {idleAgents > 0 && (
-            <span className="flex items-center gap-1 text-slate-500">
-              {idleAgents} idle
+            <span className="flex items-center gap-1 text-fluent-warning">
+              <span className="w-1.5 h-1.5 rounded-full bg-fluent-warning" />
+              {blockedAgents}
             </span>
           )}
         </div>
       )}
 
-      {/* Pending replies */}
+      {/* Pending replies badge */}
       {pendingCount > 0 && (
-        <div className="flex items-center gap-1.5 bg-amber/10 border border-amber/30 rounded-full px-3 py-1 flex-shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-amber animate-pulse" />
-          <span className="text-xs text-amber font-medium">
-            {pendingCount} waiting {pendingCount === 1 ? 'reply' : 'replies'}
+        <button
+          className="flex items-center gap-1.5 bg-fluent-warningBg border border-fluent-warningBorder rounded-fluent-lg px-2.5 py-1 flex-shrink-0 transition-transform hover:scale-[1.02] active:scale-[0.98]"
+          title="Pending replies waiting"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-fluent-warning animate-pulse" />
+          <span className="text-xs text-fluent-warning font-semibold">
+            {pendingCount}
           </span>
-        </div>
+        </button>
       )}
 
-      <a href="/classic" className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 rounded hover:bg-slate-800 flex-shrink-0">
-        Classic UI
+      {/* Classic UI link */}
+      <a href="/classic" className="text-xs text-fluent-textTert hover:text-fluent-textSec px-2 py-1 rounded-fluent-md hover:bg-fluent-card transition-colors flex-shrink-0">
+        Classic
       </a>
     </header>
   )
 }
 
-function WelcomeIcon({ className }) {
+function BuildBadge({ buildState }) {
+  const config = {
+    running:  { bg: 'bg-fluent-success/10', text: 'text-fluent-success', dot: 'bg-fluent-success animate-pulse', label: 'Running' },
+    done:     { bg: 'bg-fluent-success/10', text: 'text-fluent-success', dot: 'bg-fluent-success', label: 'Done' },
+    paused:   { bg: 'bg-fluent-card', text: 'text-fluent-textSec', dot: 'bg-fluent-textTert', label: 'Paused' },
+    stopped:  { bg: 'bg-fluent-danger/10', text: 'text-fluent-danger', dot: 'bg-fluent-danger', label: 'Stopped' },
+    error:    { bg: 'bg-fluent-danger/10', text: 'text-fluent-danger', dot: 'bg-fluent-danger', label: 'Error' },
+  }
+  const c = config[buildState.status] || config.running
+
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
-      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-      <line x1="12" y1="11" x2="12" y2="17" />
-      <line x1="9" y1="14" x2="15" y2="14" />
-    </svg>
+    <span className={`flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${c.bg} ${c.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+      {c.label}
+    </span>
   )
 }
 
+/* ═══════════════════════════════════════════
+   Fluent Empty State — Center workspace
+   ═══════════════════════════════════════════ */
+
+function FluentEmptyState({ onFileClick }) {
+  return (
+    <div className="h-full flex flex-col items-center justify-center text-fluent-textTert p-8 animate-fade-in">
+      {/* Decorative icon */}
+      <div className="w-20 h-20 mb-6 rounded-fluent-xl bg-fluent-card border border-fluent-border flex items-center justify-center shadow-fluent-card">
+        <svg className="w-10 h-10 text-fluent-textTert" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          <line x1="12" y1="11" x2="12" y2="17" />
+          <line x1="9" y1="14" x2="15" y2="14" />
+        </svg>
+      </div>
+
+      <h2 className="text-xl font-semibold text-fluent-textSec mb-2">AgentCraft Workspace</h2>
+      <p className="text-sm text-fluent-textTert text-center max-w-md mb-6 leading-relaxed">
+        Browse project files, communicate with agents, and monitor activity in real-time.
+      </p>
+
+      {/* File category chips */}
+      <div className="flex items-center gap-3 text-xs">
+        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-fluent-accentSubtle text-fluent-accent">
+          <span className="w-2 h-2 rounded-full bg-fluent-accent" />
+          Documentation
+        </span>
+        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-fluent-warningBg text-fluent-warning">
+          <span className="w-2 h-2 rounded-full bg-fluent-warning" />
+          Workflow
+        </span>
+        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-fluent-success/10 text-fluent-success">
+          <span className="w-2 h-2 rounded-full bg-fluent-success" />
+          Generated Code
+        </span>
+      </div>
+
+      {/* Quick action */}
+      <button
+        onClick={onFileClick}
+        className="mt-6 text-xs px-4 py-2 rounded-fluent-lg bg-fluent-card border border-fluent-border text-fluent-textSec hover:bg-fluent-cardHover hover:text-fluent-text transition-colors shadow-fluent-card"
+      >
+        Open File Explorer
+      </button>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════
+   Icons
+   ═══════════════════════════════════════════ */
+
 function TerminalIcon() {
   return (
-    <svg className="w-3.5 h-3.5 text-accent" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg className="w-4 h-4 text-fluent-accent" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M2 4l4 4-4 4M8 12h6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )

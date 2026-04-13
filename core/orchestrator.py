@@ -1049,12 +1049,12 @@ Respond with JSON:
 }}"""
 
                 try:
-                    result = {"output": self._llm.generate(prompt=agent_prompt)}
-                    
+                    agent_response = {"output": self._llm.generate(prompt=agent_prompt)}
+
                     # Parse response
                     import json
                     import re
-                    output = result.get("output", "")
+                    output = agent_response.get("output", "")
                     json_match = re.search(r'```json\s*\n(.*?)\n```', output, re.DOTALL)
                     if json_match:
                         decision = json.loads(json_match.group(1))
