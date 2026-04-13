@@ -772,11 +772,15 @@ def cmd_comms(args):
         subprocess.run(["bash", str(comms_dir / "build.sh")], check=True)
 
     print(f"  Starting comms server on http://localhost:{port}")
-    os.environ["COMMS_SERVER_URL"] = f"http://localhost:{port}"
+    env = os.environ.copy()
+    env["COMMS_SERVER_URL"] = f"http://localhost:{port}"
+    # Tell comms server where the workspace is so it can read the event store
+    env["AGENTCRAFT_WORKSPACE"] = str(workspace)
     subprocess.run(
         ["uvicorn", "comms.main:app", f"--port={port}",
          "--reload" if args.dev else "--workers=1"],
         cwd=str(AGENTCRAFT_HOME),
+        env=env,
     )
 
 

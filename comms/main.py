@@ -69,6 +69,30 @@ def _workspace_root() -> Path:
 async def lifespan(app: FastAPI):
     store.init_db()
     pending_store.set_loop(asyncio.get_running_loop())
+
+    # Configure EventStream file store for cross-process event sharing
+    try:
+        import os
+        from core.event_stream import ES, FileEventStore
+
+        # Use explicit workspace path from env, or auto-detect
+        ws_root_str = os.environ.get("AGENTCRAFT_WORKSPACE")
+        ws_root = Path(ws_root_str) if ws_root_str else _workspace_root()
+        ai_dir = ws_root / ".ai"
+        ai_dir.mkdir(parents=True, exist_ok=True)
+        store_path = ai_dir / "events.jsonl"
+        ES.set_file_store(FileEventStore(store_path))
+
+        # Wire ES → WebSocket bridge
+        import asyncio
+        loop = asyncio.get_running_loop()
+        ES.set_loop(loop)
+        ES.subscribe(_es_subscriber)
+
+        logger.info("[comms] EventStream wired (workspace: %s, file: %s)", ws_root, store_path)
+    except Exception as e:
+        logger.warning("[comms] EventStream not available: %s", e)
+
     logger.info("[comms] server ready on :7000")
     yield
 
@@ -723,17 +747,7 @@ async def _es_subscriber(event: dict):
 
 @app.on_event("startup")
 async def _startup_event_bridge():
-    import asyncio
-    loop = asyncio.get_running_loop()
-    try:
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        from core.event_stream import ES
-        ES.set_loop(loop)
-        ES.subscribe(_es_subscriber)
-        logger.info("[comms] EventStream bridge wired")
-    except Exception as e:
-        logger.warning("[comms] EventStream not available: %s", e)
+    pass  # Moved to lifespan()
 
 
 # ═══════════════════════════════════════════════════════════════════════
