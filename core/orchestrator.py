@@ -295,6 +295,88 @@ Respond with JSON:
         self.cicd             = self._make(CiCdAgent)
         self._agents_built    = True
 
+    def _build_agent_stage(self) -> dict:
+        """
+        Agent Build Stage — prepare, validate, and report all agents before any tasks run.
+
+        Steps:
+        1. Create each agent via _make() (resolves prompt.md + persona + skills)
+        2. Validate that skill files referenced exist
+        3. Report each agent's composition to the UI
+        4. Register all agents on the agent bus
+        """
+        from core.skill_runner import SkillRunner
+        from core.base import AiderAgent
+
+        self._banner("AGENT BUILD STAGE")
+        self._log("Building agent team...")
+
+        agent_map = {
+            "supervisor":       ("Supervisor",       SupervisorAgent),
+            "architect":        ("Architect",        ArchitectAgent),
+            "planner":          ("Planner",          PlannerAgent),
+            "backend_dev":      ("Backend Dev",      BackendDevAgent),
+            "test_dev":         ("Test Dev",         TestDevAgent),
+            "reviewer":         ("Reviewer",         ReviewerAgent),
+            "integration_test": ("Integration Test", IntegrationTestAgent),
+            "config_agent":     ("Config",           ConfigAgent),
+            "docs_agent":       ("Docs",             DocsAgent),
+            "cicd":             ("CI/CD",            CiCdAgent),
+            "spec_agent":       ("Spec",             SpecAgent),
+        }
+
+        build_report = {}
+        skill_runner = SkillRunner(self.workspace, self._llm)
+
+        for agent_id, (label, AgentClass) in agent_map.items():
+            agent = self._make(AgentClass)
+
+            # Resolve skills — normalize agent ID for framework lookup
+            fw_agent_id = agent_id.replace("_agent", "") if agent_id.endswith("_agent") else agent_id
+            ctx = self.fw.for_agent(fw_agent_id)
+            resolved_skills = skill_runner.resolve(ctx.skills) if ctx.skills else []
+
+            # Validate skill files exist
+            skill_status = []
+            for sf in resolved_skills:
+                exists = sf.exists()
+                skill_status.append({
+                    "file": sf.name,
+                    "path": str(sf),
+                    "exists": exists,
+                })
+
+            # Build composition report
+            prompt_lines = agent.system_prompt.count("\n") + 1
+            prompt_size = len(agent.system_prompt)
+
+            build_report[agent_id] = {
+                "label": label,
+                "model": self.model,
+                "prompt_size_bytes": prompt_size,
+                "prompt_lines": prompt_lines,
+                "skills": [{"file": s["file"], "exists": s["exists"]} for s in skill_status],
+                "framework": self.framework_id or "none",
+                "persona": ctx.persona_name or "none",
+            }
+
+            # Store agent instance
+            setattr(self, agent_id, agent)
+
+            # Log to UI
+            skill_names = ", ".join(s["file"] for s in skill_status) if skill_status else "none"
+            self._log(
+                f"✓ {label:20s}  prompt={prompt_size}B  skills=[{skill_names}]  framework={self.framework_id or 'default'}"
+            )
+
+        self._agents_built = True
+        self._log(f"Agent build complete — {len(agent_map)} agents ready")
+
+        # Emit to UI
+        ES.emit("agents_built", {"agents": build_report, "model": self.model})
+
+        return build_report
+
     def _make(self, AgentClass, task_id=None, iteration_id=None):
         role = getattr(AgentClass, "_role", None) or \
                AgentClass.__name__.lower().replace("agent", "")
@@ -319,16 +401,21 @@ Respond with JSON:
         """Prepare the orchestrator for execution (setup phase)."""
         self._banner("AGENT TEAM PREPARATION")
 
-        # ── Phase: RAG setup ──────────────────────────────────────────────────
+        # ── Setup event store, RAG, LLM ──────────────────────────────────────
         self._setup_event_store()
         self._setup_rag()
         self._setup_llm()
         AgentBus.reset()          # fresh bus per build run
-        self._build_agents()
-        self._register_all_on_bus()
-        self.run_log.rag_enabled = self._rag is not None and self._rag.enabled
-        self._save_log()
 
+        # ── Agent Build Stage ────────────────────────────────────────────────
+        # Create, validate, and report all agents before any tasks run
+        build_report = self._build_agent_stage()
+        self.run_log.rag_enabled = self._rag is not None and self._rag.enabled
+
+        # ── Register agents on the bus ───────────────────────────────────────
+        self._register_all_on_bus()
+
+        self._save_log()
         self._banner("PREPARATION COMPLETE")
 
     def run(self) -> RunLog:
@@ -363,7 +450,11 @@ Respond with JSON:
         AgentBus.reset()          # fresh bus per build run
         CC.reset()                # fresh control flags
         ES.clear()                # clear in-memory ring (file store persists)
-        self._build_agents()
+
+        # ── Agent Build Stage (if not already done via prepare()) ────────────
+        if not self._agents_built:
+            self._build_agent_stage()
+
         self._register_all_on_bus()
         self.run_log.rag_enabled = self._rag is not None and self._rag.enabled
         self._save_log()
