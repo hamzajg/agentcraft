@@ -305,7 +305,6 @@ Respond with JSON:
         3. Report each agent's composition to the UI
         4. Register all agents on the agent bus
         """
-        from core.skill_runner import SkillRunner
         from core.base import AiderAgent
 
         self._banner("AGENT BUILD STAGE")
@@ -326,7 +325,7 @@ Respond with JSON:
         }
 
         build_report = {}
-        skill_runner = SkillRunner(self.workspace, self._llm)
+        skill_runner = SkillRunner(self.framework_id)
 
         for agent_id, (label, AgentClass) in agent_map.items():
             agent = self._make(AgentClass)
