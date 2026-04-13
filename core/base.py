@@ -369,6 +369,41 @@ class AiderAgent:
             return base.read_text() + "\n\n---\n\n" + system_prompt
         return system_prompt
 
+    def _resolve_aider_model(self) -> list[str]:
+        """
+        Resolve aider --model and API flags based on environment config.
+
+        Priority:
+        1. OLLAMA_GATEWAY_URL + OLLAMA_API_KEY  → --openai-api-base + --openai-api-key + model name
+        2. Direct Ollama (OLLAMA_API_BASE or default localhost:11434) → --ollama + model name
+        """
+        import os
+
+        gateway_url = os.getenv("OLLAMA_GATEWAY_URL")
+        api_key     = os.getenv("OLLAMA_API_KEY", "")
+        api_base    = os.getenv("OLLAMA_API_BASE", "")
+
+        # Gateway with API key (OpenAI-compatible endpoint)
+        if gateway_url:
+            cmd = [
+                "--model", self.model,
+                "--openai-api-base", f"{gateway_url}/v1",
+            ]
+            if api_key:
+                cmd += ["--openai-api-key", api_key]
+            return cmd
+
+        # Direct Ollama — use aider's --ollama flag (simplest path)
+        if api_base and api_base != "http://localhost:11434":
+            # Custom Ollama base URL — use OpenAI-compatible endpoint
+            return [
+                "--model", self.model,
+                "--openai-api-base", f"{api_base}/v1",
+            ]
+
+        # Default localhost Ollama
+        return ["--ollama", "--model", self.model]
+
     # ── Aider execution ───────────────────────────────────────────────────────
 
     def _build_aider_commands(self, message: str, read_files: list, edit_files: list, custom_commands: list = None) -> str:
@@ -425,12 +460,14 @@ class AiderAgent:
 
         cmd = [
             "aider",
-            "--model", f"ollama/{self.model}",
             "--no-git", "--yes",
             "--verbose",  # Enable verbose output to see LLM chat
             "--stream",   # Force streaming mode
             "--message", full_message,
         ]
+
+        # Resolve model/API flags based on config
+        cmd += self._resolve_aider_model()
         for f in all_reads:
             cmd += ["--read", str(f)]
         for f in edit_files:
@@ -568,10 +605,10 @@ class AiderAgent:
         full_message = f"{self.system_prompt}\n\n{message}" if self.system_prompt else message
 
         cmd = [
-            "aider", "--model", f"ollama/{self.model}",
-            "--no-git", "--yes",
+            "aider", "--no-git", "--yes",
             "--message", full_message,
         ]
+        cmd += self._resolve_aider_model()
         for f in all_reads:
             cmd += ["--read", str(f)]
 
