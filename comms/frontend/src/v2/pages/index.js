@@ -1,6 +1,0 @@
-export { Dashboard } from './Dashboard'
-export { Chat } from './Chat'
-export { Activity } from './Activity'
-export { Agents } from './Agents'
-export { Tasks } from './Tasks'
-export { Workspace } from './Workspace'

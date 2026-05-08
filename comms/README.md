@@ -16,7 +16,7 @@ Agent hits blocker
 ## Start
 
 ```bash
-cd comms-server
+cd comms
 pip install -r requirements.txt
 uvicorn main:app --port 7000 --reload
 

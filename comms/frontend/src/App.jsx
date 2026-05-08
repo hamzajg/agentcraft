@@ -1,12 +1,13 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { WorkspaceLayout } from './v2/components'
-import { ClassicLayout } from './components'
+import { GlobalLayout } from './components'
+import { LandingPage } from './pages/LandingPage'
+import './styles/design-system.css'
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<WorkspaceLayout />} />
-      <Route path="/classic/*" element={<ClassicLayout />} />
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/workspace/*" element={<GlobalLayout />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
