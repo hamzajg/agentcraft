@@ -37,6 +37,7 @@ from .models import (
 )
 from .notifier import notify_clarification
 from .llm_suggest import generate_suggestions
+from .hermes_routes import router as hermes_router, init as init_hermes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,6 +75,13 @@ async def lifespan(app: FastAPI):
     store.init_db()
     pending_store.set_loop(asyncio.get_running_loop())
 
+    # Initialize Hermes database tables
+    try:
+        init_hermes()
+        logger.info("[comms] Hermes database initialized")
+    except Exception as e:
+        logger.warning("[comms] Hermes database init failed: %s", e)
+
     # Configure EventStream file store for cross-process event sharing
     try:
         # Use explicit workspace path from env, or auto-detect
@@ -98,6 +106,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agent Comms", version="1.0.0", lifespan=lifespan)
+
+# Mount Hermes API routes
+app.include_router(hermes_router)
 
 # Mount static files
 if ASSETS_DIR.exists():

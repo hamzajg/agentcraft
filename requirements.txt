@@ -19,3 +19,11 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.6.0
 aiosqlite>=0.20.0
+
+# ── Hermes (AI Agent Factory & Runner) ──────────────────────────────────────────
+sqlmodel>=0.0.18            # Type-safe ORM for SQLite/PostgreSQL
+openai>=1.12.0             # OpenAI API client
+anthropic>=0.18.0          # Anthropic API client
+langchain>=0.1.0           # LangChain framework support
+langchain-openai>=0.0.5    # LangChain OpenAI integration
+sse-starlette>=1.8.0       # Server-Sent Events support

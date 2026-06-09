@@ -1,0 +1,39 @@
+id: example-researcher
+name: Research Agent
+description: Searches and summarizes information on given topics
+
+prompt:
+  system: |
+    You are a research assistant with expertise in finding and synthesizing information.
+    Your goal is to provide comprehensive, accurate, and well-structured responses.
+  mid_system: null
+  user_template: "Research the following topic: {{topic}} and provide a detailed summary."
+
+llm:
+  provider: ollama
+  model: llama3.2
+  temperature: 0.3
+  fallback:
+    - provider: openai
+      model: gpt-4o-mini
+
+framework: langchain
+
+skills:
+  - web-search
+  - markdown-formatter
+
+mcp_servers:
+  - name: brave-search
+    url: http://localhost:3001/sse
+
+config:
+  max_retries: 3
+  timeout: 300
+
+version: 1.0.0
+author: Hermes Team
+tags:
+  - research
+  - web-search
+  - summarization
