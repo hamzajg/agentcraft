@@ -54,6 +54,7 @@ try:
     from agents.reviewer.agent         import ReviewerAgent, ReviewVerdict
     from agents.cicd.agent             import CiCdAgent
     from agents.supervisor.agent       import SupervisorAgent
+    from agents.hermes.agent           import HermesAgent
 except ImportError as e:
     import logging
     logging.getLogger(__name__).warning("Agent import warning: %s", e)
@@ -62,6 +63,7 @@ __all__ = [
     "SpecAgent", "ArchitectAgent", "PlannerAgent",
     "TestDevAgent", "BackendDevAgent", "ConfigAgent", "DocsAgent",
     "IntegrationTestAgent", "ReviewerAgent", "ReviewVerdict", "CiCdAgent",
-    "SupervisorAgent",
+    "SupervisorAgent", "HermesAgent",
     "list_agents", "_load_agent_class",
 ]
+

@@ -1,0 +1,8 @@
+id: hermes
+label: Hermes
+personas:
+  bmad-method: hermes
+prompt: prompts/hermes.md
+skills:
+- orchestration-decision
+- agent-collaboration

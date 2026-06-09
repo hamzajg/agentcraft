@@ -1,0 +1,73 @@
+@import '../../styles/design-system.css';
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&display=swap');
+
+:root {
+  --bg-void:          #07090f;   /* deepest space */
+  --bg-primary:       #0c1220;   /* page background */
+  --bg-secondary:     #121b2e;   /* surfaces */
+  --bg-tertiary:      #1a2640;   /* hover/active */
+  --hermes-gold:      #FFB830;   /* primary accent */
+  --hermes-gold-dim:  rgba(255, 184, 48, 0.10);
+  --hermes-gold-glow: rgba(255, 184, 48, 0.30);
+  --gradient-hermes: linear-gradient(135deg, var(--hermes-gold) 0%, var(--accent-primary) 100%);
+  
+  --font-hermes: 'Cinzel', serif;   /* brand wordmark only */
+}
+
+/* Animations */
+@keyframes hermes-glow {
+  0%, 100% { 
+    box-shadow: 0 0 10px var(--hermes-gold-dim), inset 0 0 5px var(--hermes-gold-dim); 
+    border-color: rgba(255, 184, 48, 0.3);
+  }
+  50% { 
+    box-shadow: 0 0 20px var(--hermes-gold-glow), inset 0 0 10px var(--hermes-gold-glow); 
+    border-color: var(--hermes-gold);
+  }
+}
+
+@keyframes constellation-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; filter: drop-shadow(0 0 8px var(--hermes-gold)); }
+}
+
+@keyframes message-fly {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.hermes-glow {
+  animation: hermes-glow 3s infinite ease-in-out;
+  border-color: var(--hermes-gold) !important;
+}
+
+.constellation-node {
+  animation: constellation-pulse 2s infinite ease-in-out;
+}
+
+.stream-line {
+  stroke-dasharray: 8;
+  animation: stream-flow 20s linear infinite;
+}
+
+@keyframes stream-flow {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+
+/* Scrollbar styling for Hermes components */
+.hermes-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.hermes-scrollbar::-webkit-scrollbar-track {
+  background: var(--bg-void);
+}
+.hermes-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
+}
+.hermes-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--hermes-gold);
+}
