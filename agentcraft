@@ -451,55 +451,8 @@ def _detect_checkpoint() -> int:
     # Try event store first
     if events_path.exists():
         try:
-            import json
-            state = {
-                "completed_iterations": [],
-                "build_status": "idle",
-                "resume_from_iteration": 1,
-            }
-
-            with open(events_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        ev = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    etype = ev.get("type", "")
-                    data = ev.get("data", {})
-
-                    if etype == "build_started":
-                        # New build boundary — reset tracking
-                        state["completed_iterations"] = []
-                        state["build_status"] = "running"
-
-                    elif etype == "build_done":
-                        state["build_status"] = "done"
-
-                    elif etype == "stopped":
-                        state["build_status"] = "stopped"
-
-                    elif etype == "error":
-                        state["build_status"] = "error"
-
-                    elif etype == "iter_done":
-                        iter_id = data.get("id")
-                        approved = data.get("approved", False)
-                        if iter_id is not None:
-                            if approved:
-                                if iter_id not in state["completed_iterations"]:
-                                    state["completed_iterations"].append(iter_id)
-
-            # Determine resume point from last build's state
-            if state["build_status"] in ("done",):
-                return 1  # Completed — fresh start
-            if state["completed_iterations"]:
-                return max(state["completed_iterations"]) + 1
-            return 1
-
+            from core.event_stream import FileEventStore
+            return FileEventStore(events_path).reconstruct_state()["resume_from_iteration"]
         except Exception as e:
             print(f"  Warning: Event store read failed: {e}")
 
@@ -1097,34 +1050,8 @@ def cmd_build_state(args):
         return
 
     checkpoint = _detect_checkpoint()
-    state = {}
-    try:
-        import json
-        completed = []
-        build_status = "idle"
-        with open(events_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                etype = ev.get("type", "")
-                data = ev.get("data", {})
-                if etype == "build_started":
-                    completed = []
-                    build_status = "running"
-                elif etype == "build_done":
-                    build_status = "done"
-                elif etype == "iter_done" and data.get("approved"):
-                    iid = data.get("id")
-                    if iid and iid not in completed:
-                        completed.append(iid)
-        state = {"build_status": build_status, "completed_iterations": completed}
-    except Exception:
-        pass
+    from core.event_stream import FileEventStore
+    state = FileEventStore(events_path).reconstruct_state()
 
     print(f"\n  {'='*40}")
     print(f"  Build State")
