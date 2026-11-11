@@ -790,96 +790,19 @@ async def build_state():
     Reconstruct current build state from the persistent event store.
     Returns: {build_status, current_phase, current_iter, completed_iterations, ...}
     """
-    import sys, json
-    from pathlib import Path as P
-    ai_dir = P(__file__).parent.parent
-    events_file = ai_dir / ".ai" / "events.jsonl"
+    from core.event_stream import ES, FileEventStore
 
-    if not events_file.exists():
-        return {"build_status": "idle", "resume_from_iteration": 1}
+    # The event store is configured at startup against the *workspace* root
+    # (AGENTCRAFT_WORKSPACE, or the nearest directory holding workspace.yaml).
+    # Falling back to the install dir here would always report "idle".
+    store = ES.get_file_store()
+    if store is None:
+        import os
+        ws_root_str = os.environ.get("AGENTCRAFT_WORKSPACE")
+        ws_root = Path(ws_root_str) if ws_root_str else _workspace_root()
+        store = FileEventStore(ws_root / ".ai" / "events.jsonl")
 
-    try:
-        state = {
-            "completed_iterations": [],
-            "build_status": "idle",
-            "current_phase": None,
-            "current_iter": None,
-            "phases_completed": [],
-            "delivered_files": [],
-            "approved_count": 0,
-            "rejected_count": 0,
-            "resume_from_iteration": 1,
-            "last_event_ts": 0,
-        }
-
-        with open(events_file) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                etype = ev.get("type", "")
-                data = ev.get("data", {})
-                ts = ev.get("ts", 0)
-                state["last_event_ts"] = max(state["last_event_ts"], ts)
-
-                if etype == "build_started":
-                    state["build_status"] = "running"
-                    state["completed_iterations"] = []
-                    state["phases_completed"] = []
-                    state["delivered_files"] = []
-                    state["approved_count"] = 0
-                    state["rejected_count"] = 0
-                elif etype == "build_done":
-                    state["build_status"] = "done"
-                    state["current_iter"] = None
-                elif etype == "stopped":
-                    state["build_status"] = "stopped"
-                elif etype == "error":
-                    state["build_status"] = "error"
-                elif etype == "paused":
-                    state["build_status"] = "paused"
-                elif etype == "resumed":
-                    state["build_status"] = "running"
-                elif etype == "phase_started":
-                    state["current_phase"] = data.get("phase")
-                elif etype == "phase_done":
-                    p = data.get("phase")
-                    if p and p not in state["phases_completed"]:
-                        state["phases_completed"].append(p)
-                elif etype == "iter_started":
-                    state["current_iter"] = data.get("id")
-                elif etype == "iter_done":
-                    iid = data.get("id")
-                    ok = data.get("approved", False)
-                    if iid is not None:
-                        if ok and iid not in state["completed_iterations"]:
-                            state["completed_iterations"].append(iid)
-                            state["approved_count"] += 1
-                        elif not ok:
-                            state["rejected_count"] += 1
-                        if state["current_iter"] == iid:
-                            state["current_iter"] = None
-                elif etype == "file_written":
-                    fp = data.get("path")
-                    if fp and fp not in state["delivered_files"]:
-                        state["delivered_files"].append(fp)
-
-        # Compute resume point
-        if state["build_status"] == "done":
-            state["resume_from_iteration"] = 1
-        elif state["completed_iterations"]:
-            state["resume_from_iteration"] = max(state["completed_iterations"]) + 1
-        else:
-            state["resume_from_iteration"] = 1
-
-        return state
-    except Exception as e:
-        return {"error": str(e), "build_status": "unknown"}
+    return store.reconstruct_state()
 
 
 @app.post("/api/log")
