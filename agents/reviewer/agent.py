@@ -9,6 +9,8 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from core.base import AiderAgent
+from core.failure import StepFailureMixin
+from core.files import ensure_file as _ensure_file, file_has_content as _file_has_content
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +28,7 @@ class ReviewVerdict:
         return "APPROVED" if self.approved else "REWORK"
 
 
-def _ensure_file(path: Path) -> Path:
-    """Ensure file exists with parent directories."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.touch()
-    return path
-
-
-def _file_has_content(path: Path) -> bool:
-    """Check if file exists and has meaningful content."""
-    return path.exists() and path.stat().st_size > 0
-
-
-class ReviewerAgent(AiderAgent):
+class ReviewerAgent(StepFailureMixin, AiderAgent):
     _role = "reviewer"
 
     def __init__(
@@ -139,35 +128,6 @@ class ReviewerAgent(AiderAgent):
                     "escalated_message": "CRITICAL: You MUST provide a complete review. No placeholders or stubs."}
         return {"severity": "critical", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
 
-    def _looks_like_hallucination(self, content: str) -> bool:
-        import re
-        if not content or len(content.strip()) < 20:
-            return True
-        lines = content.splitlines()
-        placeholder_patterns = [r"TODO", r"placeholder", r"stub", r"fill.*in", r"coming soon",
-                                r"auto-generat", r"skipped\b", r"incomplete\b", r"not (yet|currently) (implemented|available|generated)"]
-        placeholder_lines = sum(1 for line in lines for p in placeholder_patterns if re.search(p, line, re.IGNORECASE))
-        if len(lines) > 3 and placeholder_lines / len(lines) > 0.4:
-            return True
-        if len(content.strip()) < 100:
-            return True
-        if all(line.lstrip().startswith(("#", "//", "/*", "*", "*/")) or line.strip() == "" for line in lines if line.strip()):
-            return True
-        return False
-
-    def _ask_user_retry(self, step_label: str, error_detail: str, severity: str) -> str:
-        """Ask user what to do after a critical or hallucination failure."""
-        severity_label = severity.upper()
-        reply = self.ask(
-            question=f"Step '{step_label}' failed [{severity_label}]: {error_detail}. What should I do?",
-            suggestions=[
-                "Retry with more explicit instructions",
-                "Skip this step and continue",
-                "Abort — I'll fix this manually",
-            ],
-            timeout=600,
-        )
-        return (reply or "").lower().strip()
 
     def handle_query(self, question: str, context: dict) -> str:
         code = context.get("code", context.get("code_snippet", ""))

@@ -7,6 +7,7 @@ import logging
 import re
 from pathlib import Path
 from core.base import AiderAgent
+from core.failure import StepFailureMixin
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def _read_requirements(workspace: Path) -> str:
     return "\n\n".join(parts) if parts else ""
 
 
-class BackendDevAgent(AiderAgent):
+class BackendDevAgent(StepFailureMixin, AiderAgent):
     _role = "backend_dev"
 
     def __init__(

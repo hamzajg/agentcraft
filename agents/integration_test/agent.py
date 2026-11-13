@@ -10,26 +10,15 @@ import re
 from pathlib import Path
 
 from core.base import AiderAgent
+from core.failure import StepFailureMixin
+from core.files import ensure_file as _ensure_file, file_has_content as _file_has_content
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else "# Integration Test Agent"
 
 
-def _ensure_file(path: Path) -> Path:
-    """Ensure file exists with parent directories."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.touch()
-    return path
-
-
-def _file_has_content(path: Path) -> bool:
-    """Check if file exists and has meaningful content."""
-    return path.exists() and path.stat().st_size > 0
-
-
-class IntegrationTestAgent(AiderAgent):
+class IntegrationTestAgent(StepFailureMixin, AiderAgent):
     _role = "integration_test"
 
     def __init__(
@@ -119,22 +108,6 @@ class IntegrationTestAgent(AiderAgent):
                            result.get("severity", "?"), label, attempt)
         return result
 
-    def _classify_failure(self, result: dict, output_path: Path, label: str) -> dict:
-        import re
-        exit_code = result.get("exit_code", -1)
-        stderr = result.get("stderr", "")
-        # Skip reading if path is a directory or doesn't exist
-        content = ""
-        if output_path.exists() and output_path.is_file():
-            content = output_path.read_text()
-        if exit_code != 0 and (exit_code == -1 or "timeout" in stderr.lower() or exit_code >= 128):
-            return {"severity": "transient", "auto_retry": True, "needs_user_input": False, "escalated_message": ""}
-        if _file_has_content(output_path) and self._looks_like_hallucination(content):
-            return {"severity": "hallucination", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
-        if exit_code == 0 and not _file_has_content(output_path):
-            return {"severity": "refusal", "auto_retry": True, "needs_user_input": False,
-                    "escalated_message": "CRITICAL: You MUST write the complete file content. No placeholders or stubs."}
-        return {"severity": "critical", "auto_retry": False, "needs_user_input": True, "escalated_message": ""}
 
     def _looks_like_hallucination(self, content: str) -> bool:
         if not content or len(content.strip()) < 20:
@@ -158,19 +131,6 @@ class IntegrationTestAgent(AiderAgent):
             return True
         return False
 
-    def _ask_user_retry(self, step_label: str, error_detail: str, severity: str) -> str:
-        """Ask user what to do after a critical or hallucination failure."""
-        severity_label = severity.upper()
-        reply = self.ask(
-            question=f"Step '{step_label}' failed [{severity_label}]: {error_detail}. What should I do?",
-            suggestions=[
-                "Retry with more explicit instructions",
-                "Skip this step and continue",
-                "Abort — I'll fix this manually",
-            ],
-            timeout=600,
-        )
-        return (reply or "").lower().strip()
 
     def write_integration_tests(self, iteration: dict, tasks: list[dict], docs_dir: Path) -> list[dict]:
         self.report_status("running")

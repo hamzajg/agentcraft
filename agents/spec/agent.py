@@ -15,26 +15,15 @@ import logging
 import re
 from pathlib import Path
 from core.base import AiderAgent
+from core.failure import StepFailureMixin
+from core.files import ensure_file as _ensure_file, file_has_content as _file_has_content
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text() if (Path(__file__).parent / "prompt.md").exists() else "# Spec Agent"
 
 
-def _ensure_file(path: Path) -> Path:
-    """Ensure file exists with parent directories."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.touch()
-    return path
-
-
-def _file_has_content(path: Path) -> bool:
-    """Check if file exists and has meaningful content."""
-    return path.exists() and path.stat().st_size > 0
-
-
-class SpecAgent(AiderAgent):
+class SpecAgent(StepFailureMixin, AiderAgent):
     _role = "spec"
 
     def __init__(
