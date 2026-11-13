@@ -33,6 +33,8 @@ agentcraft/
 │   ├── framework_loader.py
 │   ├── skill_runner.py
 │   ├── diagnose.py       hardware detection
+│   ├── failure.py        shared step-failure taxonomy (classify → retry → ask)
+│   ├── files.py          shared file helpers used by every agent
 │   └── llm/              Ollama client
 │
 ├── rag/                  ← semantic retrieval (LanceDB + nomic-embed)
