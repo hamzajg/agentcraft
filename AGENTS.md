@@ -44,7 +44,9 @@ Requires: Ollama installed with models pulled (`diagnose --pull`), a
   (Ollama client).
 - `rag/` — LanceDB + nomic-embed semantic retrieval over workspace docs.
 - `monitor/` — system metrics collector.
-- `comms/` — FastAPI + React human↔agent chat UI.
+- `comms/` — FastAPI + React human↔agent chat UI; also the remote
+  read surface (`/api/live/*`, `/api/build/state`, `/api/bus/*`,
+  `/api/workspace/*`) that agent clients consume — see ADR 0002.
 - `skills/` — global reusable skill library; `frameworks/` — methodology
   bundles (bmad-method, openspec); `prompts/` — shared prompt fragments.
 - `openspec/` — spec-driven change proposals (agent-readable markdown).
