@@ -138,3 +138,67 @@ def test_reconstruct_state_records_phases_and_delivered_files(tmp_path):
     assert state["phases_completed"] == [1]
     assert state["current_phase"] == 2
     assert state["delivered_files"] == ["src/A.java", "src/B.java"]
+
+
+# ── sse_events ──────────────────────────────────────────────────────────────
+
+import asyncio
+import json
+
+from core.event_stream import sse_events
+
+
+class _FakeES:
+    """Minimal stand-in for _EventStream: recent() + since() over a list."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def recent(self, limit=200):
+        return self._events[-limit:]
+
+    def since(self, ts):
+        return [e for e in self._events if e.get("ts", 0) > ts]
+
+
+def _ev(i, ts):
+    return {"id": f"e{i}", "ts": ts, "type": "tick", "data": {"i": i}}
+
+
+def _collect(agen, n):
+    async def run():
+        out = []
+        for _ in range(n):
+            out.append(await agen.__anext__())
+        await agen.aclose()
+        return out
+    return asyncio.run(run())
+
+
+def test_sse_events_replays_snapshot_then_streams():
+    events = [_ev(i, float(i)) for i in range(1, 6)]
+    frames = _collect(
+        sse_events(_FakeES(events), snapshot=3, poll_interval=0,
+                   heartbeat_interval=0.01),
+        4,
+    )
+
+    # 3 snapshot frames + 1 live frame (cursor stops advancing after replay,
+    # so the live poll re-yields nothing new — next frame is a heartbeat or
+    # another snapshot-free poll; assert the first 3 are the tail).
+    data_frames = [f for f in frames if f.startswith("id:")]
+    assert len(data_frames) >= 3
+    ids = [json.loads(f.split("data: ", 1)[1])["id"] for f in data_frames[:3]]
+    assert ids == ["e3", "e4", "e5"]
+
+
+def test_sse_events_since_filters_old_events():
+    events = [_ev(i, float(i)) for i in range(1, 6)]
+    frames = _collect(
+        sse_events(_FakeES(events), since=3.0, poll_interval=0,
+                   heartbeat_interval=9999),
+        2,
+    )
+    data_frames = [f for f in frames if f.startswith("id:")]
+    ids = [json.loads(f.split("data: ", 1)[1])["id"] for f in data_frames]
+    assert ids == ["e4", "e5"]

@@ -784,6 +784,26 @@ async def live_events(limit: int = 200, since: float = 0):
     return es.recent(limit)
 
 
+@app.get("/api/live/stream")
+async def live_stream(since: float = 0.0, snapshot: int = 100):
+    """
+    Server-Sent Events tail of the build event stream.
+    For non-browser agent clients (curl, scripts) that can't use /ws.
+    ?since=<ts> resumes after that timestamp; since=0 replays the last
+    `snapshot` events then streams live. Frames: `id:` + `data:` JSON.
+    """
+    from fastapi.responses import StreamingResponse
+    from core.event_stream import ES, sse_events
+    return StreamingResponse(
+        sse_events(ES, since=since, snapshot=snapshot),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/api/build/state")
 async def build_state():
     """

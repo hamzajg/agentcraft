@@ -40,7 +40,13 @@ Ollama (local models) + Aider  →  writes generated code into the WORKSPACE rep
 - **Knowledge layer** (`rag/`): LanceDB + nomic-embed embeddings over the
   workspace docs; gives agents grounded context instead of hallucinating.
 - **Interface layer** (`comms/`, `monitor/`): human visibility — chat,
-  metrics. Observer role, not part of the agent loop.
+  metrics. Observer role, not part of the agent loop. `comms/main.py`
+  exposes the remote read surface agents/scripts consume: `/api/live/events`
+  (recent JSON), `/api/live/stream` (SSE tail over `core.event_stream.ES`,
+  `?since=` resume + snapshot catch-up), `/api/build/state` (replayed
+  build state), `/api/control/state` (pause/stop/gates), `/api/bus/*`
+  (agent-to-agent messages), `/api/workspace/*` (docs/workflow/output
+  file browsing). Writes stay in `/api/control/*` and `/api/bus/message`.
 
 ## State
 

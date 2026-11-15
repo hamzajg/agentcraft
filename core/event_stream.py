@@ -353,3 +353,31 @@ class _EventStream:
 
 # Module-level singleton
 ES = _EventStream()
+
+
+async def sse_events(es: "_EventStream", since: float = 0.0,
+                     snapshot: int = 100, poll_interval: float = 1.0,
+                     heartbeat_interval: float = 15.0):
+    """Async generator of SSE frames tailing the event stream.
+
+    Yields ``id: <event id>\ndata: <json event>\n\n`` frames plus
+    ``: hb`` heartbeat comments. ``since <= 0`` first replays the last
+    ``snapshot`` events (catch-up), then streams live; ``since > 0``
+    streams only events newer than that timestamp. Runs until the
+    consumer cancels (client disconnect).
+    """
+    cursor = since
+    if cursor <= 0:
+        for ev in es.recent(snapshot):
+            cursor = max(cursor, ev.get("ts", 0.0))
+            yield f"id: {ev.get('id', '')}\ndata: {json.dumps(ev)}\n\n"
+
+    last_beat = time.monotonic()
+    while True:
+        for ev in es.since(cursor):
+            cursor = max(cursor, ev.get("ts", 0.0))
+            yield f"id: {ev.get('id', '')}\ndata: {json.dumps(ev)}\n\n"
+        if time.monotonic() - last_beat >= heartbeat_interval:
+            yield ": hb\n\n"
+            last_beat = time.monotonic()
+        await asyncio.sleep(poll_interval)
