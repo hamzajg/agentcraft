@@ -115,7 +115,7 @@ class TestFrameworksSection:
 
 
 class TestCliFormatting:
-    def test_summary_renders_a_human_readable_inventory(self):
+    def test_summary_format_renders_a_human_readable_inventory(self):
         manifest = build_manifest(REPO_ROOT)
         text = render_summary(manifest)
         assert str(len(manifest["agents"])) in text
@@ -125,7 +125,7 @@ class TestCliFormatting:
         assert text.count("\n") >= len(manifest["agents"])
         assert not text.lstrip().startswith("{")
 
-    def test_json_render_parses_and_carries_the_key_sections(self):
+    def test_manifest_command_emits_valid_json_to_stdout(self):
         import json
         parsed = json.loads(render_json(build_manifest(REPO_ROOT)))
         assert parsed["schema_version"] == SCHEMA_VERSION
