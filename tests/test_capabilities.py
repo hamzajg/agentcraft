@@ -6,7 +6,7 @@ pin its shape and determinism against the real repo — no LLM, no aider.
 """
 from pathlib import Path
 
-from core.capabilities import SCHEMA_VERSION, build_manifest
+from core.capabilities import SCHEMA_VERSION, build_manifest, resolve_skill
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,3 +42,67 @@ class TestAgentsSection:
         manifest = build_manifest(REPO_ROOT)
         for agent in manifest["agents"]:
             assert agent["declared_skills"] == sorted(agent["declared_skills"])
+
+
+class TestSkillResolution:
+    def test_framework_skill_shadows_global(self, tmp_path: Path):
+        (tmp_path / "frameworks" / "fw" / "skills" / "shared").mkdir(parents=True)
+        (tmp_path / "skills" / "shared").mkdir(parents=True)
+        entry = resolve_skill(
+            "shared", "fw",
+            frameworks_dir=tmp_path / "frameworks",
+            skills_dir=tmp_path / "skills",
+        )
+        assert entry == {"name": "shared", "source": "framework", "exists": True}
+
+    def test_global_skill_used_when_framework_has_none(self, tmp_path: Path):
+        (tmp_path / "skills" / "only-global").mkdir(parents=True)
+        entry = resolve_skill(
+            "only-global", "fw",
+            frameworks_dir=tmp_path / "frameworks",
+            skills_dir=tmp_path / "skills",
+        )
+        assert entry == {"name": "only-global", "source": "global", "exists": True}
+
+    def test_a_missing_skill_is_reported_rather_than_dropped(self, tmp_path: Path):
+        entry = resolve_skill(
+            "nowhere", "fw",
+            frameworks_dir=tmp_path / "frameworks",
+            skills_dir=tmp_path / "skills",
+        )
+        assert entry == {"name": "nowhere", "source": "missing", "exists": False}
+
+    def test_resolved_skills_cover_every_declared_skill(self):
+        manifest = build_manifest(REPO_ROOT, framework_id="openspec")
+        for agent in manifest["agents"]:
+            names = [r["name"] for r in agent["resolved_skills"]]
+            assert names == sorted(names)
+            assert len(names) == len(set(names))
+            for declared in agent["declared_skills"]:
+                assert declared in names
+
+    def test_real_resolution_marks_framework_and_global_sources(self):
+        manifest = build_manifest(REPO_ROOT, framework_id="openspec")
+        architect = next(a for a in manifest["agents"] if a["id"] == "architect")
+        by_name = {r["name"]: r for r in architect["resolved_skills"]}
+        assert by_name["openspec-propose"]["source"] == "framework"
+        assert by_name["create-doc"]["source"] == "global"
+        assert all(r["exists"] for r in architect["resolved_skills"])
+
+
+class TestFrameworksSection:
+    def test_lists_frameworks_with_their_global_skills(self):
+        from core.framework_loader import FrameworkLoader
+        manifest = build_manifest(REPO_ROOT)
+        by_id = {f["id"]: f for f in manifest["frameworks"]}
+        assert set(by_id) == set(FrameworkLoader.list_frameworks())
+        assert by_id["openspec"]["label"] == "OpenSpec (Spec-Driven Development)"
+        assert by_id["openspec"]["global_skills"] == sorted(
+            ["run-checklist", "openspec-review"])
+        assert by_id["bmad-method"]["global_skills"] == ["run-checklist"]
+
+    def test_lists_available_skills_for_the_active_framework(self):
+        manifest = build_manifest(REPO_ROOT, framework_id="openspec")
+        assert manifest["skills"] == sorted(manifest["skills"])
+        assert "openspec-propose" in manifest["skills"]   # framework skill
+        assert "run-checklist" in manifest["skills"]      # global skill
