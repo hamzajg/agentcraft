@@ -228,6 +228,25 @@ Global skills live in `skills/`. Framework skills live in `frameworks/<fw>/skill
 
 ---
 
+## Capability manifest
+
+Inspect the whole capability surface — installed agents, each one's framework,
+persona and resolved skills, plus the available frameworks and skills — as a
+single deterministic document.
+
+```bash
+python agentcraft manifest                     # machine-readable JSON (default)
+python agentcraft manifest --format summary    # human-readable inventory
+python agentcraft manifest --framework openspec # with a framework applied
+```
+
+The manifest is a read-only projection of the agent/framework/skill registries
+(`core/capabilities.py:build_manifest`) — no separate source of truth — so
+external tooling, CI and the comms UI can discover "what can this project do?"
+without reading source.
+
+---
+
 ## Comms UI
 
 When an agent hits a blocker it sends a message to the comms UI instead of guessing.
