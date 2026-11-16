@@ -115,3 +115,35 @@ def build_manifest(repo_root=None, framework_id: str | None = None) -> dict:
         "frameworks":     _frameworks_section(),
         "skills":         SkillRunner(framework_id=framework_id).list_available(),
     }
+
+
+def render_json(manifest: dict) -> str:
+    """The manifest as indented JSON — the machine-readable stdout form."""
+    import json
+    return json.dumps(manifest, indent=2)
+
+
+def render_summary(manifest: dict) -> str:
+    """A human-readable inventory of the capability surface for the terminal."""
+    agents = manifest.get("agents", [])
+    lines = [
+        f"AgentCraft capability manifest (schema v{manifest.get('schema_version')})",
+        f"Framework: {manifest.get('framework') or 'none'}",
+        f"Agents ({len(agents)}):",
+    ]
+    for agent in agents:
+        lines.append(f"  - {agent['id']} ({agent['class']})")
+        lines.append(
+            f"      framework: {agent.get('framework') or 'none'}"
+            f", persona: {agent.get('persona') or 'none'}"
+        )
+        skills = ", ".join(r["name"] for r in agent.get("resolved_skills", []))
+        if skills:
+            lines.append(f"      skills: {skills}")
+
+    frameworks = manifest.get("frameworks", [])
+    lines.append(f"Frameworks ({len(frameworks)}): "
+                 + ", ".join(f["id"] for f in frameworks))
+    skills = manifest.get("skills", [])
+    lines.append(f"Skills ({len(skills)}): " + ", ".join(skills))
+    return "\n".join(lines)

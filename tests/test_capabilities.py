@@ -6,7 +6,13 @@ pin its shape and determinism against the real repo — no LLM, no aider.
 """
 from pathlib import Path
 
-from core.capabilities import SCHEMA_VERSION, build_manifest, resolve_skill
+from core.capabilities import (
+    SCHEMA_VERSION,
+    build_manifest,
+    render_json,
+    render_summary,
+    resolve_skill,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -106,3 +112,23 @@ class TestFrameworksSection:
         assert manifest["skills"] == sorted(manifest["skills"])
         assert "openspec-propose" in manifest["skills"]   # framework skill
         assert "run-checklist" in manifest["skills"]      # global skill
+
+
+class TestCliFormatting:
+    def test_summary_renders_a_human_readable_inventory(self):
+        manifest = build_manifest(REPO_ROOT)
+        text = render_summary(manifest)
+        assert str(len(manifest["agents"])) in text
+        for agent in manifest["agents"]:
+            assert agent["id"] in text
+        # Multi-line layout — at least one line per agent, not a json blob.
+        assert text.count("\n") >= len(manifest["agents"])
+        assert not text.lstrip().startswith("{")
+
+    def test_json_render_parses_and_carries_the_key_sections(self):
+        import json
+        parsed = json.loads(render_json(build_manifest(REPO_ROOT)))
+        assert parsed["schema_version"] == SCHEMA_VERSION
+        assert "agents" in parsed
+        assert "frameworks" in parsed
+

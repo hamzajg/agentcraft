@@ -26,6 +26,7 @@ Verified 2026-11-13 against CI (`.github/workflows/ci.yml`).
 | Validate workspace | `python agentcraft build` |
 | Run agents | `python agentcraft bootstrap` (auto-resumes checkpoints) |
 | Chat UI | `python agentcraft comms` → http://localhost:7000 |
+| Capability manifest | `python agentcraft manifest` (JSON) · `--format summary` (human) |
 
 Requires: Ollama installed with models pulled (`diagnose --pull`), a
 `workspace.yaml` from `init`, and human-authored docs in the workspace's
