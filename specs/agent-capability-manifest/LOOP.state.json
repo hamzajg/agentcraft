@@ -1,8 +1,8 @@
 {
   "feature": "agent-capability-manifest",
-  "status": "running",
+  "status": "done",
   "iterations": 0,
-  "updated": "2026-11-16T08:25:20Z",
+  "updated": "2026-11-16T08:30:46Z",
   "waves": {
     "1": {
       "status": "done",
@@ -19,11 +19,11 @@
       "updated": "2026-11-16T08:24:57Z"
     },
     "3": {
-      "status": "in-progress",
+      "status": "done",
       "branch": "feat/agent-capability-manifest-w3",
-      "pr": "\u2014",
-      "evidence": "\u2014",
-      "updated": "2026-11-16T08:25:20Z"
+      "pr": "#10",
+      "evidence": "pytest 38/38, CI green, merged",
+      "updated": "2026-11-16T08:29:32Z"
     }
   },
   "gates": {},
@@ -32,6 +32,8 @@
     "2026-11-16T08:21:57Z complete wave 1 (#8): pytest 29/29, CI green, merged",
     "2026-11-16T08:22:54Z start wave 2 on feat/agent-capability-manifest-w2",
     "2026-11-16T08:24:57Z complete wave 2 (#9): pytest 36/36, CI green, merged",
-    "2026-11-16T08:25:20Z start wave 3 on feat/agent-capability-manifest-w3"
+    "2026-11-16T08:25:20Z start wave 3 on feat/agent-capability-manifest-w3",
+    "2026-11-16T08:29:32Z complete wave 3 (#10): pytest 38/38, CI green, merged",
+    "2026-11-16T08:30:46Z feature validated and shipped"
   ]
 }
