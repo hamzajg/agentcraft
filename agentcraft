@@ -18,6 +18,7 @@ Usage:
   agentcraft new-agent <name>      Scaffold a new agent folder
   agentcraft frameworks            List available frameworks
   agentcraft skills                List available skills
+  agentcraft manifest              Print the machine-readable capability manifest (JSON)
 
 Run `agentcraft <command> --help` for options.
 """
@@ -1118,6 +1119,15 @@ def cmd_skills(args):
     print()
 
 
+def cmd_manifest(args):
+    """Print the machine-readable capability manifest as JSON."""
+    import json
+    from core.capabilities import build_manifest
+
+    manifest = build_manifest(framework_id=args.framework)
+    print(json.dumps(manifest, indent=2))
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _to_class_name(name: str) -> str:
@@ -1257,6 +1267,11 @@ def main():
     p = subs.add_parser("skills", help="List available skills")
     p.add_argument("--framework", default=None)
     p.set_defaults(func=cmd_skills)
+
+    # ── manifest ──────────────────────────────────────────────────────────────
+    p = subs.add_parser("manifest", help="Print the capability manifest (JSON)")
+    p.add_argument("--framework", default=None, help="Active framework id (e.g. openspec)")
+    p.set_defaults(func=cmd_manifest)
 
     # ── build-state / reset-events ────────────────────────────────────────
     p = subs.add_parser("build-state", help="Show current build state from event store")

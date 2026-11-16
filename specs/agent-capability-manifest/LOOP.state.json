@@ -1,0 +1,19 @@
+{
+  "feature": "agent-capability-manifest",
+  "status": "running",
+  "iterations": 0,
+  "updated": "2026-11-16T08:19:07Z",
+  "waves": {
+    "1": {
+      "status": "in-progress",
+      "branch": "feat/agent-capability-manifest-w1",
+      "pr": "\u2014",
+      "evidence": "\u2014",
+      "updated": "2026-11-16T08:19:07Z"
+    }
+  },
+  "gates": {},
+  "events": [
+    "2026-11-16T08:19:07Z start wave 1 on feat/agent-capability-manifest-w1"
+  ]
+}
